@@ -6,13 +6,14 @@ from typing import Any
 
 from mcp.server.mcpserver import MCPServer
 
-from . import analyze, graph
+from . import analyze, graph, report
 
 INSTRUCTIONS = """codebox: static analysis for codebases.
 Start with `code_overview` (auto-builds a LadybugDB code graph under <root>/.codebox).
 Navigate with `find_symbol`, `outline`, `callers`, `callees`, `impact`; go deeper with `graph_query` (read-only Cypher; see `graph_schema`).
 Use `structural_search` (ast-grep) instead of regex when matching code shapes; `grep` for text.
 Quality/risk: `complexity`, `hotspots`, `unreferenced`, `semgrep_scan`.
+Whole-repo reports with ranked restructuring recommendations: `code_report`.
 Call edges are name-resolved (no type inference): check the `confidence` field and verify by reading code.
 All paths are relative to `root` (default: server working directory)."""
 
@@ -124,6 +125,17 @@ def semgrep_scan(config: str = "p/default", path: str | None = None, root: str |
     """Semgrep rule scan (bugs/security). config: registry pack (p/default, p/owasp-top-ten, p/python...) or local rules path.
     Slow on first run; fetches rules from the registry unless config is local."""
     return _ok("semgrep_scan", analyze.semgrep_scan(root, path, config, limit))
+
+
+@mcp.tool()
+def code_report(kind: str = "all", exclude: list[str] | None = None, root: str | None = None,
+                top: int = 15, days: int = 180) -> dict:
+    """Report on a repo. kind: all (with ranked recommendations), structure (coupling, cycles, hubs,
+    misplaced functions, crowded files), risk (complex functions, hotspots) or deadcode (verified candidates).
+    Returns `markdown` ready to show or save, plus the underlying `data`. exclude: path prefixes to leave out
+    (default: tests/, test/, testdata/, fixtures/)."""
+    rep = report.build(root, kind, tuple(exclude) if exclude is not None else report.DEFAULT_EXCLUDE, top, days)
+    return _ok("code_report", {"markdown": report.to_markdown(rep), "data": rep}, rep["limitations"])
 
 
 def main() -> None:

@@ -78,3 +78,34 @@ def test_structural_search(repo):
 def test_complexity(repo):
     r = analyze.complexity(repo, min_ccn=2)
     assert any(f["function"].endswith("step") for f in r["functions"])
+
+
+def test_report_all(repo):
+    from codebox import report
+    rep = report.build(repo)
+    assert {"structure", "risk", "deadcode", "recommendations"} <= rep.keys()
+    # every row the report cites carries path + line evidence
+    s = rep["structure"]
+    for row in s["coupling"] + s["hubs"] + s["crowded_files"] + rep["recommendations"]:
+        assert row["path"] and row["line"]
+    assert "hotspots_error" in rep["risk"]  # temp copy is not a git repo
+    md = report.to_markdown(rep)
+    for heading in ("# Codebase report", "## Recommendations", "## Structure", "## Risk", "## Dead code", "## Limitations"):
+        assert heading in md
+
+
+def test_report_deadcode_is_verified(repo):
+    from codebox import report
+    d = report.deadcode(repo)
+    assert {"unused", "stamp"} <= names(d["likely_dead"], "symbol")
+    recs = report.build(repo)["recommendations"]
+    assert any(r["kind"] == "delete_dead_code" and r["path"] == "util.py" for r in recs)
+
+
+def test_report_kind_and_exclude(repo):
+    from codebox import report
+    rep = report.build(repo, "deadcode", exclude=("util.py",))
+    assert "structure" not in rep and "recommendations" not in rep
+    assert all(x["path"] != "util.py" for x in rep["deadcode"]["likely_dead"])
+    with pytest.raises(ValueError):
+        report.build(repo, "nope")

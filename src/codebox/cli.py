@@ -7,7 +7,7 @@ import json
 import shutil
 import sys
 
-from . import analyze, graph
+from . import analyze, graph, report
 
 
 def _print(obj, as_json: bool) -> None:
@@ -96,6 +96,13 @@ def main(argv: list[str] | None = None) -> int:
     sc = sub.add_parser("scan", help="semgrep scan")
     sc.add_argument("--config", default="p/default")
     sc.add_argument("--path")
+    rp = sub.add_parser("report", help="Markdown report: structure, risk, dead code and ranked recommendations")
+    rp.add_argument("kind", nargs="?", default="all", choices=report.KINDS)
+    rp.add_argument("--output", "-o", help="write the report to this file instead of stdout")
+    rp.add_argument("--exclude", action="append",
+                    help=f"path prefix to leave out (repeatable; default: {' '.join(report.DEFAULT_EXCLUDE)})")
+    rp.add_argument("--top", type=int, default=15, help="rows per table")
+    rp.add_argument("--days", type=int, default=180, help="git history window for hotspots")
     for p in sub.choices.values():
         p.add_argument("--limit", type=int, default=50)
         # accept global flags after the subcommand too
@@ -114,6 +121,8 @@ def main(argv: list[str] | None = None) -> int:
         return run_setup(a.agent, a.yes, a.dry_run)
     if a.cmd == "doctor":
         return doctor(a.prefetch)
+    if a.cmd == "report":
+        return _report(a, r, j)
 
     try:
         result = _dispatch(a, r)
@@ -125,6 +134,22 @@ def main(argv: list[str] | None = None) -> int:
             print(f'{result["path"]}:{i["line"]:<6} import  {i["source"]}')
         result = [{"path": result["path"], **s} for s in result["symbols"]]
     _print(result, j)
+    return 0
+
+
+def _report(a, r, as_json: bool) -> int:
+    try:
+        rep = report.build(r, a.kind, tuple(a.exclude) if a.exclude else report.DEFAULT_EXCLUDE, a.top, a.days)
+    except Exception as e:
+        print(f"error: {type(e).__name__}: {e}", file=sys.stderr)
+        return 2
+    text = json.dumps(rep, indent=2, default=str) if as_json else report.to_markdown(rep)
+    if a.output:
+        with open(a.output, "w") as fh:
+            fh.write(text + "\n")
+        print(f"wrote {a.output}", file=sys.stderr)
+    else:
+        print(text)
     return 0
 
 

@@ -39,6 +39,8 @@ codex plugin add codebox@codebox
 
 Restart the agent after installing. The first tool call builds the code graph.
 
+In Claude Code, `/codebox:report` saves a full report to `codebox-report.md` and checks the top recommendations against the code (`/codebox:report structure`, `risk` or `deadcode` for one part). In any agent, you can also just ask for a codebox report.
+
 ### CLI with uv
 
 Install the CLI to use codebox from a terminal, or to register it with other agents (Cursor, Gemini CLI, …). It needs Python 3.11–3.14.
@@ -72,6 +74,8 @@ codebox complexity --min-ccn 15
 codebox hotspots --days 90
 codebox unreferenced                   # dead-code candidates
 codebox scan --config p/owasp-top-ten
+codebox report -o report.md            # structure + risk + dead code, with ranked recommendations
+codebox report structure               # or: risk, deadcode; --exclude PREFIX, --json
 ```
 
 Global flags go anywhere: `-C/--root <repo>` and `--json`.
@@ -80,7 +84,7 @@ The graph is stored in `<repo>/.codebox/`, which ignores itself in git. It rebui
 
 ## MCP tools
 
-`code_overview`, `code_index`, `outline`, `find_symbol`, `callers`, `callees`, `impact`, `graph_schema`, `graph_query`, `unreferenced`, `structural_search`, `grep`, `complexity`, `hotspots`, `semgrep_scan`. Run the server manually with `codebox serve`, which uses stdio.
+`code_overview`, `code_index`, `code_report`, `outline`, `find_symbol`, `callers`, `callees`, `impact`, `graph_schema`, `graph_query`, `unreferenced`, `structural_search`, `grep`, `complexity`, `hotspots`, `semgrep_scan`. Run the server manually with `codebox serve`, which uses stdio.
 
 ## Graph schema
 
@@ -106,7 +110,7 @@ Calls are resolved **by name**, without type inference, in this order: same file
 uv sync && uv run pytest
 ```
 
-Layout: `src/codebox/{discover,parse,graph,analyze,server,cli,setup_agents}.py`. The skill lives in `src/codebox/skill/` so that it ships inside the wheel; `skills/codebox` is a symlink to it for plugins and skills.sh.
+Layout: `src/codebox/{discover,parse,graph,analyze,report,server,cli,setup_agents}.py`. The skill lives in `src/codebox/skill/` so that it ships inside the wheel; `skills/codebox` is a symlink to it for plugins and skills.sh.
 
 ## Roadmap
 

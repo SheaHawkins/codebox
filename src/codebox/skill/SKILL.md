@@ -1,6 +1,6 @@
 ---
 name: codebox
-description: Static analysis of a codebase with the codebox MCP tools or CLI — repo maps, symbol lookup, call graphs (callers/callees/impact), structural ast-grep search, complexity, git hotspots, coupling, dead-code candidates and semgrep scans. Use it to recommend structural changes that reduce complexity and coupling or improve how code is organized (what to split, move, merge or decouple, backed by metrics), before you change a function other code depends on (run impact first), when you would otherwise open more than a handful of files to understand a repo, when searching for a code shape that regex gets wrong, and when auditing for risk or dead code. Skip it for small repos, single-file edits, and plain text or config searches.
+description: Static analysis of a codebase with the codebox MCP tools or CLI — repo maps, symbol lookup, call graphs (callers/callees/impact), structural ast-grep search, complexity, git hotspots, coupling, dead-code candidates, semgrep scans, and Markdown reports that combine them. Use it to recommend structural changes that reduce complexity and coupling or improve how code is organized (what to split, move, merge or decouple, backed by metrics), before you change a function other code depends on (run impact first), when you would otherwise open more than a handful of files to understand a repo, when searching for a code shape that regex gets wrong, and when auditing for risk or dead code. Skip it for small repos, single-file edits, and plain text or config searches.
 ---
 
 # codebox: static analysis workflow
@@ -41,6 +41,7 @@ If neither is installed, run it ad hoc: `uvx --from git+https://github.com/SheaH
 | Where's the risky code? | `hotspots`, then `complexity` | `codebox hotspots`, `codebox complexity` |
 | Dead code? | `unreferenced`, then verify each | `codebox unreferenced` |
 | Bugs / security smells | `semgrep_scan` | `codebox scan --config p/default` |
+| Whole-repo report + ranked restructuring recommendations | `code_report` | `codebox report [structure\|risk\|deadcode] -o report.md` |
 | Anything else about structure | `graph_query` (+`graph_schema`) | `codebox query 'MATCH …'` |
 
 ## Workflow
@@ -66,7 +67,9 @@ The goal is a short, ranked list of changes, each of which measurably reduces co
 
 ### 1. Gather the evidence
 
-Run these, then open the code they point at before drawing conclusions.
+Start with `code_report` (CLI: `codebox report`). It runs everything below in one call and returns a Markdown report with a first-pass ranked list. Treat that list as a draft: it applies fixed thresholds, so open the code behind each item, drop what doesn't hold up, and add what the numbers can't see. Use `kind` to get one part (`structure`, `risk`, `deadcode`), and `exclude` to match the repo's test and fixture layout.
+
+To dig further, or to run one check on its own, use the tools and queries below.
 
 - `code_overview`: size, largest files, `most_called` and `most_calling` symbols.
 - `complexity` with `min_ccn` 10: functions too branchy to follow.
@@ -157,7 +160,7 @@ Rank by gain against cost, and put hotspot fixes first. Keep the list short. Thr
 - functions stored and called later: callbacks, dispatch tables, closures passed as values;
 - exported APIs, entrypoints, and anything reached through reflection or `getattr`.
 
-Before you call something dead, grep for its name across the repo, including strings and config. Report only what survives that check. Never delete code based on `unreferenced` alone.
+Before you call something dead, grep for its name across the repo, including strings and config. Report only what survives that check. Never delete code based on `unreferenced` alone. `code_report` with `kind: "deadcode"` does the decorator and grep checks for you and sorts the candidates into likely dead, decorator-registered, and mentioned elsewhere.
 
 ## Evidence and limits — read this
 
