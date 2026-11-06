@@ -39,6 +39,13 @@ codex plugin add codebox@codebox
 
 Restart the agent after installing. The first tool call builds the code graph.
 
+**Updating:** refreshing the marketplace only updates the catalog. You also have to update the plugin itself, then restart:
+
+```bash
+claude plugin marketplace update codebox && claude plugin update codebox@codebox
+codex plugin marketplace upgrade && codex plugin add codebox@codebox
+```
+
 In Claude Code, `/codebox:report` saves a full report to `codebox-report.md` and checks the top recommendations against the code (`/codebox:report structure`, `risk` or `deadcode` for one part). In any agent, you can also just ask for a codebox report.
 
 ### CLI with uv
