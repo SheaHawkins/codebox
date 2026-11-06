@@ -31,7 +31,7 @@ def test_outline(repo):
 def test_cross_file_callers(repo):
     rows = graph.callers(repo, "helper")
     assert names(rows, "caller") == {"Service.run"}
-    assert rows[0]["path"] == "app.py" and rows[0]["line"] == 6
+    assert rows[0]["path"] == "app.py" and rows[0]["line"] == 7
 
 
 def test_method_calls_and_depth(repo):
@@ -44,6 +44,16 @@ def test_member_call_not_linked_to_function(repo):
     rows = graph.callers(repo, "now")
     assert names(rows, "caller") == {"stamp"}
     assert rows[0]["call_lines"] == [6]
+
+
+def test_module_qualified_call(repo):
+    # util.twice() via `import util` links to util.py's top-level twice, not to a method.
+    rows = graph.callers(repo, "twice")
+    assert names(rows, "caller") == {"main"}
+    assert rows[0]["path"] == "app.py" and rows[0]["call_lines"] == [16]
+    conf = graph.run_query(repo, "MATCH (:Symbol)-[r:CALLS]->(:Symbol {name:'twice'}) RETURN r.confidence AS c")
+    assert [r["c"] for r in conf] == ["imported"]
+    assert "twice" not in names(graph.unreferenced(repo), "symbol")
 
 
 def test_impact_and_unreferenced(repo):

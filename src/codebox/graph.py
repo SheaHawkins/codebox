@@ -61,6 +61,32 @@ def _sym_id(path: str, s: Sym | None) -> str:
     return f"{path}#<module>" if s is None else f"{path}#{s.qualname}@{s.start_line}"
 
 
+def _module_names(path: str) -> set[str]:
+    """Names a file can be imported as: its stem, or its directory for package entry files."""
+    p = Path(path)
+    if p.stem in ("__init__", "index", "mod"):
+        return {p.parent.name} if p.parent.name else set()
+    return {p.stem}
+
+
+def _module_aliases(imports) -> dict[str, str]:
+    """Local name -> module name for imports that bind a module: `import util`, `from . import graph`,
+    `import a.b as x`, `import * as clock from './clock'`. Names that turn out to be classes or
+    functions are harmless: they only matter when a project file has that module name."""
+    out: dict[str, str] = {}
+    for imp in imports:
+        for item in imp.items:
+            out.setdefault(item.split(".")[0] if imp.source.startswith("import ") else item, item.split(".")[-1])
+        for target, alias in re.findall(r"([\w.*]+)\s+as\s+(\w+)", imp.source):
+            if target == "*":
+                m = re.search(r"""from\s+['"]([^'"]+)['"]""", imp.source)
+                if not m:
+                    continue
+                target = Path(m.group(1)).stem
+            out[alias] = target.split(".")[-1]
+    return out
+
+
 def _rows(res) -> list[dict]:
     cols = res.get_column_names()
     return [dict(zip(cols, r)) for r in res.get_all()]
@@ -88,6 +114,14 @@ def build_index(root=None) -> dict:
     for f in facts:
         for s in f.symbols:
             by_name[s.name].append((f.path, _sym_id(f.path, s), s.parent is not None or s.kind == "method"))
+
+    # module name -> language -> [(name, path, sym_id)] of top-level definitions, for mod.name() calls
+    module_defs: dict[str, dict[str, list[tuple[str, str, str]]]] = defaultdict(lambda: defaultdict(list))
+    for f in facts:
+        for m in _module_names(f.path):
+            for s in f.symbols:
+                if s.parent is None:
+                    module_defs[m][f.language].append((s.name, f.path, _sym_id(f.path, s)))
 
     file_rows, sym_rows, defines, contains, calls, ext_calls, imports = [], [], [], [], [], [], []
     externals, modules = set(), set()
@@ -117,17 +151,24 @@ def build_index(root=None) -> dict:
             modules.add(imp.source)
             imports.append({"f": f.path, "m": imp.source, "line": imp.line, "items": ",".join(imp.items)})
 
+        aliases = _module_aliases(f.imports)
         seen = set()
         for c in f.calls:
             enc = f.enclosing(c.byte)
             src_id = _sym_id(f.path, enc)
             allc = by_name.get(c.name, [])
-            if c.member:  # obj.name(): only methods / nested members are plausible targets
+            mod = aliases.get(c.receiver) if c.receiver else None
+            mod_cands = [(p, sid) for n, p, sid in module_defs.get(mod, {}).get(f.language, []) if n == c.name] if mod else []
+            if mod_cands:  # mod.name() where `mod` is an imported project module
+                cands = mod_cands
+            elif c.member:  # obj.name(): only methods / nested members are plausible targets
                 cands = [(p, sid) for p, sid, m in allc if m]
             else:         # bare name(): prefer top-level definitions, fall back to anything
                 cands = [(p, sid) for p, sid, m in allc if not m] or [(p, sid) for p, sid, _ in allc]
             same = [sid for p, sid in cands if p == f.path]
-            if same:
+            if mod_cands:
+                targets, conf = [sid for _, sid in cands], "imported"
+            elif same:
                 targets, conf = same, "same_file"
             elif cands and c.name in imported_names:
                 targets, conf = [sid for _, sid in cands], "imported"
@@ -233,11 +274,6 @@ def run_query(root, cypher: str, params: dict | None = None, limit: int = 200,
 
 
 SYM_MATCH = "(s.name = $q OR s.qualname = $q OR s.id = $q)"
-SYM_FIELDS = "{id: {v}.id, name: {v}.name, kind: {v}.kind, path: {v}.path, line: {v}.start_line}"
-
-
-def _sf(v: str) -> str:
-    return SYM_FIELDS.replace("{v}", v)
 
 
 def find_symbols(root, query: str, kind: str | None = None, limit: int = 50) -> list[dict]:

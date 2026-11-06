@@ -29,6 +29,7 @@ class Call:
     line: int  # 1-based
     byte: int
     member: bool = False  # called on a receiver: obj.name(), pkg.Name(), A::name()
+    receiver: str | None = None  # receiver text when it is a plain identifier: `graph` in graph.callees()
 
 
 @dataclass
@@ -128,6 +129,19 @@ def _is_member(call_node: ts.Node, name_node: ts.Node) -> bool:
     return parent is not None and parent.id != call_node.id and parent.type not in ("arguments", "argument_list")
 
 
+def _receiver(call_node: ts.Node, name_node: ts.Node) -> str | None:
+    """Plain-identifier receiver of a member call (`mod` in mod.f()), else None."""
+    r = call_node.child_by_field_name("receiver")
+    if r is None:
+        parent = name_node.parent
+        if parent is None or parent.id == call_node.id or not parent.named_children:
+            return None
+        r = parent.named_children[0]
+    if r.id == name_node.id or r.type != "identifier":
+        return None
+    return r.text.decode("utf-8", errors="replace")
+
+
 def parse_file(path: str, language: str, source: bytes) -> FileFacts:
     facts = FileFacts(path=path, language=language)
     text = source.decode("utf-8", errors="replace")
@@ -184,8 +198,9 @@ def parse_file(path: str, language: str, source: bytes) -> FileFacts:
         for cap, nodes in caps.items():
             if cap == "reference.call":
                 n = nodes[0]
+                member = _is_member(n, name_node)
                 facts.calls.append(Call(name=name, line=name_node.start_point[0] + 1, byte=n.start_byte,
-                                        member=_is_member(n, name_node)))
+                                        member=member, receiver=_receiver(n, name_node) if member else None))
             elif cap.startswith("definition.") and not facts.symbols:
                 n = nodes[0]
                 tag_defs.append(Sym(

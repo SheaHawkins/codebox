@@ -1,4 +1,5 @@
 from util import helper
+import util
 
 
 class Service:
@@ -12,4 +13,4 @@ class Service:
 
 
 def main():
-    return Service().run(3)
+    return Service().run(3) + util.twice(1)

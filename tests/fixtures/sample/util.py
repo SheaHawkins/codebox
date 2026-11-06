@@ -7,3 +7,7 @@ def helper(x):
 
 def unused():
     return 1
+
+
+def twice(x):
+    return 2 * x
