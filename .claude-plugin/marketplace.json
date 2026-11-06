@@ -1,0 +1,5 @@
+{
+  "name": "codebox",
+  "owner": { "name": "Shea", "email": "shea@spiralsoft.ai" },
+  "plugins": [{ "name": "codebox", "source": "./", "description": "Static analysis toolbox for coding agents." }]
+}

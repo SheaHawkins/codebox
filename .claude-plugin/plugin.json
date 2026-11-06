@@ -1,0 +1,14 @@
+{
+  "name": "codebox",
+  "version": "0.1.0",
+  "description": "Static analysis toolbox: tree-sitter + LadybugDB code graph, ast-grep, lizard, semgrep — as an MCP server and skill.",
+  "author": { "name": "Shea", "email": "shea@spiralsoft.ai" },
+  "license": "MIT",
+  "skills": "./skills",
+  "mcpServers": {
+    "codebox": {
+      "command": "uv",
+      "args": ["run", "--quiet", "--project", "${CLAUDE_PLUGIN_ROOT}", "codebox", "serve"]
+    }
+  }
+}

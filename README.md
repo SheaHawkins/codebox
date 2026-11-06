@@ -1,0 +1,93 @@
+# codebox
+
+**Static analysis toolbox for coding agents.** One package that is simultaneously a **CLI**, an **MCP server**, and an **agent skill**, modeled on [REA](https://github.com/morluto/rea)'s layout.
+
+It gives Claude (or Codex, Cursor, Gemini CLI…) a queryable model of a codebase instead of making it read files one at a time:
+
+| Layer | Tool | What it provides |
+|---|---|---|
+| Parsing | [tree-sitter](https://tree-sitter.github.io) via `tree-sitter-language-pack` | Outlines, imports and call sites for 300+ languages (grammars download on first use) |
+| Code graph | [LadybugDB](https://github.com/LadybugDB/ladybug) (embedded Cypher graph DB, the Kùzu successor) | `File`/`Symbol`/`Module` graph with `CALLS`, `CONTAINS`, `IMPORTS` edges; callers, callees, impact, arbitrary read-only Cypher |
+| Structural search | [ast-grep](https://ast-grep.github.io) | Match code *shapes* (`eval($X)`, `$A, _ := $F($$$)`) and full rule objects |
+| Text search | [ripgrep](https://github.com/BurntSushi/ripgrep) | Fast, `.gitignore`-aware grep |
+| Metrics | [lizard](https://github.com/terryyin/lizard) + git | Cyclomatic complexity; churn × complexity **hotspots** |
+| Rules | [semgrep](https://semgrep.dev) (via `uvx`, not a hard dependency) | Bug and security scans from registry packs or local rules |
+
+Every result carries `path:line` evidence, and tools state their limitations, such as name-based call resolution.
+
+## Quick start
+
+```bash
+# install the CLI (Python 3.11–3.14; uv recommended)
+uv tool install git+<this-repo>        # or, from a checkout: uv tool install .
+
+# register the MCP server + skill with every agent it detects (shows the plan, asks first, backs up configs)
+codebox setup                          # --dry-run to preview, --agent claude-code to limit
+
+codebox doctor                         # check rg / git / semgrep; --prefetch python typescript go
+```
+
+**As a Claude Code plugin:** this repo is also a plugin and marketplace (`.claude-plugin/`), so `/plugin marketplace add <repo>` followed by `/plugin install codebox` gives you the MCP server and skill together.
+
+**Skill only:** `skills/codebox/SKILL.md` works on its own and falls back to the CLI via `uvx`.
+
+## CLI
+
+```bash
+codebox overview                       # repo map: languages, biggest files, most-called/most-calling symbols
+codebox outline src/app.py
+codebox find Service --kind class
+codebox callers helper --depth 2       # call-site lines included
+codebox callees Service.run
+codebox impact validateGraph           # transitive callers grouped by file
+codebox query "MATCH (a:Symbol)-[:CALLS]->(b:Symbol) WHERE a.path <> b.path
+               RETURN a.path, b.path, count(*) AS n ORDER BY n DESC LIMIT 10"
+codebox search 'JSON.parse($X)' -l typescript
+codebox grep 'TODO|FIXME'
+codebox complexity --min-ccn 15
+codebox hotspots --days 90
+codebox unreferenced                   # dead-code candidates
+codebox scan --config p/owasp-top-ten
+```
+
+Global flags go anywhere: `-C/--root <repo>` and `--json`.
+
+The graph is stored in `<repo>/.codebox/`, which ignores itself in git. It rebuilds automatically when any source file is newer than the index.
+
+## MCP tools
+
+`code_overview`, `code_index`, `outline`, `find_symbol`, `callers`, `callees`, `impact`, `graph_schema`, `graph_query`, `unreferenced`, `structural_search`, `grep`, `complexity`, `hotspots`, `semgrep_scan`. Run the server manually with `codebox serve`, which uses stdio.
+
+## Graph schema
+
+```
+(:File {path, language, lines, code_lines, parse_errors})
+(:Symbol {id, name, qualname, kind, path, start_line, end_line, signature})
+(:External {name})   (:Module {name})
+(File)-[:DEFINES]->(Symbol)          (Symbol)-[:CONTAINS]->(Symbol)
+(Symbol)-[:CALLS {line, confidence}]->(Symbol)
+(Symbol)-[:CALLS_EXTERNAL {line}]->(External)
+(File)-[:IMPORTS {line, items}]->(Module)
+```
+
+Code at module level is attributed to a pseudo-symbol named `<module>`.
+
+## Accuracy model
+
+Calls are resolved **by name**, without type inference, in this order: same file → imported name → globally unique → ambiguous (up to 3 candidates). The edge's `confidence` property records which rule matched. A receiver call (`obj.save()`) only links to methods. A bare call (`save()`) prefers top-level functions, so `Date.now()` never resolves to your own `now()`. If you need precise references in typed languages, pair codebox with an LSP.
+
+## Development
+
+```bash
+uv sync && uv run pytest
+```
+
+Layout: `src/codebox/{discover,parse,graph,analyze,server,cli,setup_agents}.py`. The skill lives in `src/codebox/skill/` so that it ships inside the wheel; `skills/codebox` is a symlink to it for plugins and skills.sh.
+
+## Roadmap
+
+- Incremental indexing (re-parse only changed files, keyed on content hash)
+- Import → file resolution (`IMPORTS` to `File`, not only `Module`) for module dependency graphs and cycle detection
+- More analyzers: `osv-scanner` (vulnerable dependencies), `gitleaks` (secrets), `jscpd` (duplication), `tokei`/`scc`
+- Optional embeddings in LadybugDB's vector index for semantic code search
+- SARIF output for CI

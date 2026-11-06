@@ -1,0 +1,28 @@
+[project]
+name = "codebox"
+version = "0.1.0"
+description = "Portable static analysis toolbox for coding agents: tree-sitter + LadybugDB code graph + ast-grep + semgrep, as CLI, MCP server and skill."
+readme = "README.md"
+authors = [{ name = "Shea", email = "shea@spiralsoft.ai" }]
+requires-python = ">=3.11,<3.15"
+license = "MIT"
+dependencies = [
+    "ast-grep-py>=0.51.1",
+    "ladybug>=0.22.1",
+    "lizard>=1.25.0",
+    "mcp>=2.3.0",
+    "tree-sitter>=0.26.0",
+    "tree-sitter-language-pack>=1.24.0",
+]
+
+[project.scripts]
+codebox = "codebox.cli:main"
+
+[dependency-groups]
+dev = [
+    "pytest>=8",
+]
+
+[build-system]
+requires = ["uv_build>=0.12.7,<0.13.0"]
+build-backend = "uv_build"
