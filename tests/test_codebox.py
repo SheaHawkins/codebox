@@ -109,3 +109,23 @@ def test_report_kind_and_exclude(repo):
     assert all(x["path"] != "util.py" for x in rep["deadcode"]["likely_dead"])
     with pytest.raises(ValueError):
         report.build(repo, "nope")
+
+
+def test_report_html(repo, tmp_path):
+    from codebox import report
+    rep = report.build(repo)
+    page = report.render(rep, "html")
+    # Artifact page contract: no document skeleton of its own, <title> up front, theme tokens for dark mode
+    assert page.startswith("<title>") and "<!doctype" not in page.lower() and "<body" not in page
+    assert 'prefers-color-scheme: dark' in page and ':root[data-theme="dark"]' in page
+    for heading in ("Recommendations", "Risk", "Structure", "Dead code", "Limitations"):
+        assert f"<h2>{heading}</h2>" in page
+    assert "util.py:" in page  # path:line evidence survives into the page
+    out = report.write(rep, str(tmp_path / "r.html"))
+    assert out.read_text() == page
+    assert report.write(rep, str(tmp_path / "r.md")).read_text().startswith("# Codebase report")
+
+
+def test_report_html_escapes():
+    from codebox.report_html import inline
+    assert inline("Split `<script>`") == "Split <code>&lt;script&gt;</code>"

@@ -98,7 +98,8 @@ def main(argv: list[str] | None = None) -> int:
     sc.add_argument("--path")
     rp = sub.add_parser("report", help="Markdown report: structure, risk, dead code and ranked recommendations")
     rp.add_argument("kind", nargs="?", default="all", choices=report.KINDS)
-    rp.add_argument("--output", "-o", help="write the report to this file instead of stdout")
+    rp.add_argument("--output", "-o", help="write the report to this file instead of stdout (.html/.json/.md picks the format)")
+    rp.add_argument("--format", "-f", choices=("markdown", "html", "json"), help="output format (default: markdown, or from -o's extension)")
     rp.add_argument("--exclude", action="append",
                     help=f"path prefix to leave out (repeatable; default: {' '.join(report.DEFAULT_EXCLUDE)})")
     rp.add_argument("--top", type=int, default=15, help="rows per table")
@@ -138,18 +139,16 @@ def main(argv: list[str] | None = None) -> int:
 
 
 def _report(a, r, as_json: bool) -> int:
+    fmt = a.format or ("json" if as_json else None)
     try:
         rep = report.build(r, a.kind, tuple(a.exclude) if a.exclude else report.DEFAULT_EXCLUDE, a.top, a.days)
+        if a.output:
+            print(f"wrote {report.write(rep, a.output, fmt, r)}", file=sys.stderr)
+        else:
+            print(report.render(rep, fmt or "markdown"))
     except Exception as e:
         print(f"error: {type(e).__name__}: {e}", file=sys.stderr)
         return 2
-    text = json.dumps(rep, indent=2, default=str) if as_json else report.to_markdown(rep)
-    if a.output:
-        with open(a.output, "w") as fh:
-            fh.write(text + "\n")
-        print(f"wrote {a.output}", file=sys.stderr)
-    else:
-        print(text)
     return 0
 
 

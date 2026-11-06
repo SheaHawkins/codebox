@@ -128,14 +128,22 @@ def semgrep_scan(config: str = "p/default", path: str | None = None, root: str |
 
 
 @mcp.tool()
-def code_report(kind: str = "all", exclude: list[str] | None = None, root: str | None = None,
-                top: int = 15, days: int = 180) -> dict:
+def code_report(kind: str = "all", format: str = "markdown", output: str | None = None,
+                exclude: list[str] | None = None, root: str | None = None, top: int = 15, days: int = 180) -> dict:
     """Report on a repo. kind: all (with ranked recommendations), structure (coupling, cycles, hubs,
     misplaced functions, crowded files), risk (complex functions, hotspots) or deadcode (verified candidates).
-    Returns `markdown` ready to show or save, plus the underlying `data`. exclude: path prefixes to leave out
+    format: markdown, html (a self-contained visual page that can be published as a claude.ai Artifact as-is)
+    or json. output: file path to write instead of returning the content (relative to root); returns the path
+    plus the ranked recommendations. Prefer output for html. exclude: path prefixes to leave out
     (default: tests/, test/, testdata/, fixtures/)."""
     rep = report.build(root, kind, tuple(exclude) if exclude is not None else report.DEFAULT_EXCLUDE, top, days)
-    return _ok("code_report", {"markdown": report.to_markdown(rep), "data": rep}, rep["limitations"])
+    if output:
+        path = report.write(rep, output, format, root)
+        result = {"written": str(path), "format": format, "stats": rep["stats"],
+                  "recommendations": rep.get("recommendations", [])}
+    else:
+        result = {format: report.render(rep, format), "data": rep} if format == "markdown" else {format: report.render(rep, format)}
+    return _ok("code_report", result, rep["limitations"])
 
 
 def main() -> None:

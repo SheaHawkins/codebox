@@ -46,7 +46,7 @@ claude plugin marketplace update codebox && claude plugin update codebox@codebox
 codex plugin marketplace upgrade && codex plugin add codebox@codebox
 ```
 
-In Claude Code, `/codebox:report` saves a full report to `codebox-report.md` and checks the top recommendations against the code (`/codebox:report structure`, `risk` or `deadcode` for one part). In any agent, you can also just ask for a codebox report.
+In Claude Code, `/codebox:report` builds a visual report (ranked recommendations, complexity and hotspot charts, a file-coupling heatmap, a hub-function scatter, dead code), publishes it as a private Artifact you can open from the session, and checks the top recommendations against the code. Add `structure`, `risk` or `deadcode` for one part. Where Artifacts aren't available, the page is saved to `.codebox/report.html`.
 
 ### CLI with uv
 
@@ -82,7 +82,8 @@ codebox hotspots --days 90
 codebox unreferenced                   # dead-code candidates
 codebox scan --config p/owasp-top-ten
 codebox report -o report.md            # structure + risk + dead code, with ranked recommendations
-codebox report structure               # or: risk, deadcode; --exclude PREFIX, --json
+codebox report -o report.html          # the same report as a self-contained visual page
+codebox report structure               # or: risk, deadcode; --format markdown|html|json, --exclude PREFIX
 ```
 
 Global flags go anywhere: `-C/--root <repo>` and `--json`.
@@ -117,7 +118,7 @@ Calls are resolved **by name**, without type inference, in this order: same file
 uv sync && uv run pytest
 ```
 
-Layout: `src/codebox/{discover,parse,graph,analyze,report,server,cli,setup_agents}.py`. The skill lives in `src/codebox/skill/` so that it ships inside the wheel; `skills/codebox` is a symlink to it for plugins and skills.sh.
+Layout: `src/codebox/{discover,parse,graph,analyze,report,report_html,server,cli,setup_agents}.py`. The skill lives in `src/codebox/skill/` so that it ships inside the wheel; `skills/codebox` is a symlink to it for plugins and skills.sh.
 
 ## Roadmap
 

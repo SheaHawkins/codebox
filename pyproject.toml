@@ -1,6 +1,6 @@
 [project]
 name = "codebox"
-version = "0.2.0"
+version = "0.3.0"
 description = "Portable static analysis toolbox for coding agents: tree-sitter + LadybugDB code graph + ast-grep + semgrep, as CLI, MCP server and skill."
 readme = "README.md"
 authors = [{ name = "Shea", email = "shea@spiralsoft.ai" }]

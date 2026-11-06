@@ -5,6 +5,7 @@ from __future__ import annotations
 
 import re
 import time
+from pathlib import Path
 
 from . import analyze, graph
 from .discover import resolve_root
@@ -358,6 +359,30 @@ def _md_deadcode(d: dict) -> list[str]:
             + ["### Name mentioned elsewhere (probably in use)", ""]
             + _table(["Function", "Location", "Mentioned at"],
                      [[_code(x["symbol"]), _loc(x), mentions(x)] for x in d["mentioned_elsewhere"]]))
+
+
+def render(rep: dict, fmt: str = "markdown") -> str:
+    """Render a built report as markdown, html or json."""
+    if fmt in ("md", "markdown"):
+        return to_markdown(rep)
+    if fmt == "html":
+        from .report_html import to_html
+        return to_html(rep, COMPLEX_CCN, HUB_MIN_FAN_IN, HUB_MIN_FAN_OUT)
+    if fmt == "json":
+        import json
+        return json.dumps(rep, indent=2, default=str)
+    raise ValueError(f"unknown format {fmt!r}; choose markdown, html or json")
+
+
+def write(rep: dict, output: str, fmt: str | None = None, root=None) -> Path:
+    """Write a rendered report. Relative paths resolve against the repo root. Format defaults from the extension."""
+    out = Path(output).expanduser()
+    if not out.is_absolute():
+        out = resolve_root(root) / out
+    fmt = fmt or {".html": "html", ".htm": "html", ".json": "json"}.get(out.suffix.lower(), "markdown")
+    out.parent.mkdir(parents=True, exist_ok=True)
+    out.write_text(render(rep, fmt))
+    return out
 
 
 def to_markdown(rep: dict) -> str:

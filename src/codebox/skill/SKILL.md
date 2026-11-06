@@ -41,7 +41,7 @@ If neither is installed, run it ad hoc: `uvx --from git+https://github.com/SheaH
 | Where's the risky code? | `hotspots`, then `complexity` | `codebox hotspots`, `codebox complexity` |
 | Dead code? | `unreferenced`, then verify each | `codebox unreferenced` |
 | Bugs / security smells | `semgrep_scan` | `codebox scan --config p/default` |
-| Whole-repo report + ranked restructuring recommendations | `code_report` | `codebox report [structure\|risk\|deadcode] -o report.md` |
+| Whole-repo report + ranked restructuring recommendations | `code_report` (`format: "html"` + `output` for a visual page) | `codebox report [structure\|risk\|deadcode] -o report.html` |
 | Anything else about structure | `graph_query` (+`graph_schema`) | `codebox query 'MATCH …'` |
 
 ## Workflow
@@ -67,7 +67,7 @@ The goal is a short, ranked list of changes, each of which measurably reduces co
 
 ### 1. Gather the evidence
 
-Start with `code_report` (CLI: `codebox report`). It runs everything below in one call and returns a Markdown report with a first-pass ranked list. Treat that list as a draft: it applies fixed thresholds, so open the code behind each item, drop what doesn't hold up, and add what the numbers can't see. Use `kind` to get one part (`structure`, `risk`, `deadcode`), and `exclude` to match the repo's test and fixture layout.
+Start with `code_report` (CLI: `codebox report`). It runs everything below in one call and returns a Markdown report with a first-pass ranked list. Treat that list as a draft: it applies fixed thresholds, so open the code behind each item, drop what doesn't hold up, and add what the numbers can't see. Use `kind` to get one part (`structure`, `risk`, `deadcode`), and `exclude` to match the repo's test and fixture layout. When the user wants to see the report, pass `format: "html"` and `output: ".codebox/report.html"`, then publish that file as an Artifact if you have the Artifact tool (it already meets the page contract), or give them the path to open.
 
 To dig further, or to run one check on its own, use the tools and queries below.
 
