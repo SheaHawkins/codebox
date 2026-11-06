@@ -17,19 +17,43 @@ Every result carries `path:line` evidence, and tools state their limitations, su
 
 ## Quick start
 
+### Plugin (recommended)
+
+This repo is a plugin marketplace. Installing the plugin gives your agent the MCP server and the skill together. The server runs through `uv`, so you need [uv](https://docs.astral.sh/uv/) on your `PATH`.
+
+**Claude Code**
+
 ```bash
-# install the CLI (Python 3.11–3.14; uv recommended)
-uv tool install git+<this-repo>        # or, from a checkout: uv tool install .
-
-# register the MCP server + skill with every agent it detects (shows the plan, asks first, backs up configs)
-codebox setup                          # --dry-run to preview, --agent claude-code to limit
-
-codebox doctor                         # check rg / git / semgrep; --prefetch python typescript go
+claude plugin marketplace add SheaHawkins/codebox
+claude plugin install codebox@codebox
 ```
 
-**As a Claude Code plugin:** this repo is also a plugin and marketplace (`.claude-plugin/`), so `/plugin marketplace add <repo>` followed by `/plugin install codebox` gives you the MCP server and skill together.
+Or, inside a session: `/plugin marketplace add SheaHawkins/codebox`, then `/plugin install codebox@codebox`.
 
-**Skill only:** `skills/codebox/SKILL.md` works on its own and falls back to the CLI via `uvx`.
+**Codex**
+
+```bash
+codex plugin marketplace add SheaHawkins/codebox
+codex plugin add codebox@codebox
+```
+
+Restart the agent after installing. The first tool call builds the code graph.
+
+### CLI with uv
+
+Install the CLI to use codebox from a terminal, or to register it with other agents (Cursor, Gemini CLI, …). It needs Python 3.11–3.14.
+
+```bash
+uv tool install git+https://github.com/SheaHawkins/codebox   # or, from a checkout: uv tool install .
+
+codebox setup      # register the MCP server + skill with every agent it detects; shows the plan, asks first, backs up configs
+                   # --dry-run to preview, --agent claude-code to limit
+codebox doctor     # check rg / git / semgrep; --prefetch python typescript go
+```
+
+To run it once without installing: `uvx --from git+https://github.com/SheaHawkins/codebox codebox overview`.
+
+**Skill only:** `skills/codebox/SKILL.md` works on its own. When the CLI isn't installed, it runs codebox through `uvx`.
 
 ## CLI
 

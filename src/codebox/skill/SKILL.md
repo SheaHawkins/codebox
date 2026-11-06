@@ -7,7 +7,7 @@ description: Static analysis of a codebase with the codebox MCP tools or CLI —
 
 codebox gives you a queryable model of a codebase instead of reading files one by one.
 It is available as MCP tools (`mcp__codebox__*`) and as a CLI (`codebox …`, add `--json` for machine output).
-If neither is installed, run it ad hoc: `uvx --from git+<repo-url> codebox <cmd>`.
+If neither is installed, run it ad hoc: `uvx --from git+https://github.com/SheaHawkins/codebox codebox <cmd>`.
 
 ## Pick the right tool
 
