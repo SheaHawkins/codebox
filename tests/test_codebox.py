@@ -129,3 +129,44 @@ def test_report_html(repo, tmp_path):
 def test_report_html_escapes():
     from codebox.report_html import inline
     assert inline("Split `<script>`") == "Split <code>&lt;script&gt;</code>"
+
+
+def test_report_layers_and_distribution(repo):
+    from codebox import report
+    rep = report.build(repo)
+    layers = {f: x["layer"] for x in rep["structure"]["layers"] for f in x["files"]}
+    assert layers["app.py"] > layers["util.py"]  # app.py calls into util.py, so it sits above it
+    dist = rep["risk"]["distribution"]
+    assert sum(d["functions"] for d in dist) == rep["risk"]["functions_total"] > 0
+    assert all(f["path"] and f["line"] for f in rep["risk"]["files"])
+
+
+def test_layers_survive_cycles():
+    from codebox.report import layers
+    deps = [{"path": "a", "target": "b", "calls": 2}, {"path": "b", "target": "a", "calls": 1},
+            {"path": "b", "target": "c", "calls": 1}]
+    got = {f: x["layer"] for x in layers(deps) for f in x["files"]}
+    assert set(got) == {"a", "b", "c"} and got["c"] == 0
+
+
+def test_report_charts_render(repo):
+    from codebox import report
+    page = report.render(report.build(repo), "html")
+    for label in ("Dependency layers", "Complexity distribution", "Size and complexity by file"):
+        assert f"<h3>{label}</h3>" in page
+    assert 'class="deps"' in page and 'class="tree"' in page and 'class="hist"' in page
+
+
+def test_squarify_fills_area():
+    from codebox.report_charts import _squarify
+    vals = [50.0, 30.0, 15.0, 5.0]
+    rects = _squarify([v * 600 * 320 / 100 for v in vals], 0, 0, 600, 320)
+    assert abs(sum(w * h for _, _, w, h in rects) - 600 * 320) < 1e-6
+
+
+def test_member_call_not_linked_to_nested_function(tmp_path):
+    # m.group(1) on a regex match must not resolve to a function nested inside another function.
+    (tmp_path / "a.py").write_text("def outer():\n    def group(x):\n        return x\n    return group(1)\n")
+    (tmp_path / "b.py").write_text("import re\n\ndef parse(s):\n    m = re.match('x', s)\n    return m.group(1)\n")
+    graph.build_index(str(tmp_path))
+    assert names(graph.callers(str(tmp_path), "outer.group"), "caller") == {"outer"}

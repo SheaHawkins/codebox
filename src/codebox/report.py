@@ -89,15 +89,78 @@ def structure(root, exclude=DEFAULT_EXCLUDE, top: int = 15) -> dict:
         RETURN f.path AS path, 1 AS line, f.code_lines AS code_lines, count(s) AS symbols
         ORDER BY symbols DESC LIMIT $n""", {"n": top}, auto_index=False)
 
+    deps = q(root, f"""
+        MATCH (a:Symbol)-[r:CALLS]->(b:Symbol)
+        WHERE r.confidence <> 'ambiguous' AND a.path <> b.path {fa} {fb}
+        RETURN a.path AS path, min(r.line) AS line, b.path AS target, count(*) AS calls
+        ORDER BY calls DESC LIMIT 300""", auto_index=False)
+
     return {"coupling": coupling_rows, "cycles": cycles, "hubs": hubs,
-            "misplaced": misplaced, "crowded_files": crowded}
+            "misplaced": misplaced, "crowded_files": crowded,
+            "file_deps": deps, "layers": layers(deps)}
+
+
+def layers(deps: list[dict], max_files: int = 24) -> list[dict]:
+    """Assign each file a layer: 0 = depends on no other file, n = one above its deepest dependency.
+    Keeps the `max_files` files with the most cross-file calls. Back edges in a cycle are ignored."""
+    weight: dict[str, int] = {}
+    for d in deps:
+        for f in (d["path"], d["target"]):
+            weight[f] = weight.get(f, 0) + int(d["calls"])
+    keep = set(sorted(weight, key=lambda f: -weight[f])[:max_files])
+    out: dict[str, set[str]] = {f: set() for f in keep}
+    for d in deps:
+        if d["path"] in keep and d["target"] in keep:
+            out[d["path"]].add(d["target"])
+    depth: dict[str, int] = {}
+    active: set[str] = set()
+
+    def visit(f: str) -> int:
+        if f in depth:
+            return depth[f]
+        if f in active:  # back edge of a cycle
+            return -1
+        active.add(f)
+        depth[f] = max([visit(t) + 1 for t in out[f] if visit(t) >= 0] or [0])
+        active.discard(f)
+        return depth[f]
+
+    for f in sorted(keep):
+        visit(f)
+    by_layer: dict[int, list[str]] = {}
+    for f, d in depth.items():
+        by_layer.setdefault(d, []).append(f)
+    return [{"layer": n, "files": sorted(by_layer[n])} for n in sorted(by_layer, reverse=True)]
 
 
 # --------------------------------------------------------------------------- risk
 
+CCN_BANDS = [(1, 4), (5, 9), (10, 14), (15, 19), (20, 29), (30, None)]
+
+
+def _distribution(funcs: list[dict]) -> list[dict]:
+    rows = []
+    for lo, hi in CCN_BANDS:
+        n = sum(1 for f in funcs if f["ccn"] >= lo and (hi is None or f["ccn"] <= hi))
+        rows.append({"band": f"{lo}-{hi}" if hi else f"{lo}+", "min": lo, "max": hi, "functions": n})
+    return rows
+
+
+def _file_sizes(root, cx: dict, exclude) -> list[dict]:
+    lines = {r["path"]: r["code_lines"] for r in graph.run_query(
+        root, "MATCH (f:File) RETURN f.path AS path, f.code_lines AS code_lines", limit=100_000, auto_index=False)}
+    nfuncs: dict[str, int] = {}
+    for f in cx["functions"]:
+        nfuncs[f["path"]] = nfuncs.get(f["path"], 0) + 1
+    rows = [{"path": p, "line": 1, "code_lines": lines.get(p) or 0, "ccn": c, "functions": nfuncs.get(p, 0)}
+            for p, c in cx["file_ccn"].items() if not _excluded(p, exclude) and lines.get(p)]
+    return sorted(rows, key=lambda r: -r["code_lines"])
+
+
 def risk(root, exclude=DEFAULT_EXCLUDE, top: int = 15, days: int = 180) -> dict:
-    cx = analyze.complexity(root, min_ccn=10, limit=10_000)
-    funcs = [f for f in cx["functions"] if not _excluded(f["path"], exclude)][:top]
+    cx = analyze.complexity(root, min_ccn=1, limit=1_000_000)
+    every = [f for f in cx["functions"] if not _excluded(f["path"], exclude)]
+    funcs = [f for f in every if f["ccn"] >= 10][:top]
     hs = analyze.hotspots(root, days, limit=10_000)
     hot = [h for h in hs.get("hotspots", []) if not _excluded(h["path"], exclude)][:top]
     worst = {}
@@ -108,7 +171,9 @@ def risk(root, exclude=DEFAULT_EXCLUDE, top: int = 15, days: int = 180) -> dict:
         h["line"] = w["line"] if w else 1
         if w:
             h["worst_function"] = f'{w["function"]} (CCN {w["ccn"]})'
-    out = {"complex_functions": funcs, "hotspots": hot, "window_days": days}
+    out = {"complex_functions": funcs, "hotspots": hot, "window_days": days,
+           "distribution": _distribution(every), "functions_total": len(every),
+           "files": _file_sizes(root, cx, exclude)}
     if hs.get("error"):
         out["hotspots_error"] = hs["error"]
     return out
@@ -317,7 +382,10 @@ def _md_recommendations(recs: list[dict]) -> list[str]:
 
 
 def _md_structure(s: dict) -> list[str]:
-    return (["## Structure", "", "### Coupling between files", ""]
+    return (["## Structure", "", "### Dependency layers", "",
+             "Top layer calls into lower layers; layer 0 depends on no other file.", ""]
+            + _table(["Layer", "Files"], [[x["layer"], ", ".join(map(_code, x["files"]))] for x in s.get("layers", [])])
+            + ["### Coupling between files", ""]
             + _table(["Files", "Calls", "Directions", "Example call"],
                      [[f'`{c["path"]}` ↔ `{c["other"]}`', c["calls"], "both" if c["directions"] == 2 else "one",
                        _loc(c["example"])] for c in s["coupling"]])
@@ -339,6 +407,8 @@ def _md_risk(r: dict) -> list[str]:
     L = (["## Risk", "", "### Most complex functions (CCN ≥ 10)", ""]
          + _table(["Function", "Location", "CCN", "Lines", "Params"],
                   [[_code(f["function"]), _loc(f), f["ccn"], f["nloc"], f["params"]] for f in r["complex_functions"]])
+         + ["### Complexity distribution", ""]
+         + _table(["CCN band", "Functions"], [[d["band"], d["functions"]] for d in r.get("distribution", [])])
          + [f'### Hotspots (churn × complexity, last {r["window_days"]} days)', ""])
     if r.get("hotspots_error"):
         return L + [f'_{r["hotspots_error"]}._', ""]

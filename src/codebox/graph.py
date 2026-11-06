@@ -109,11 +109,15 @@ def build_index(root=None) -> dict:
         facts.append(f)
         notes.update(f.notes)
 
-    # name -> [(path, sym_id, is_member_like)]
+    # name -> [(path, sym_id, is_member_like)]. Member-like = callable as obj.name(): methods and members of
+    # classes/structs, not functions nested inside other functions (those are only reachable by bare name).
     by_name: dict[str, list[tuple[str, str, bool]]] = defaultdict(list)
     for f in facts:
+        kinds = {s.qualname: s.kind for s in f.symbols}
         for s in f.symbols:
-            by_name[s.name].append((f.path, _sym_id(f.path, s), s.parent is not None or s.kind == "method"))
+            nested_in_function = kinds.get(s.parent) in ("function", "method")
+            member = s.kind == "method" or (s.parent is not None and not nested_in_function)
+            by_name[s.name].append((f.path, _sym_id(f.path, s), member))
 
     # module name -> language -> [(name, path, sym_id)] of top-level definitions, for mod.name() calls
     module_defs: dict[str, dict[str, list[tuple[str, str, str]]]] = defaultdict(lambda: defaultdict(list))

@@ -11,6 +11,8 @@ import html
 import re
 from pathlib import Path
 
+from . import report_charts as charts
+
 KIND_LABELS = {
     "split_function": "Split function",
     "break_cycle": "Break cycle",
@@ -222,7 +224,14 @@ def _risk(r: dict, threshold: int) -> str:
             f'<div class="panel"><h3>Most complex functions</h3><p>Cyclomatic complexity (CCN) per function, '
             f"10 and above.</p>{cx}</div>"
             f'<div class="panel"><h3>Hotspots</h3><p>Commits in the last {e(r["window_days"])} days × file CCN. '
-            f"High scores are complex files that keep changing.</p>{hs}</div></div></section>")
+            f"High scores are complex files that keep changing.</p>{hs}</div></div>"
+            '<div class="grid-2">'
+            f'<div class="panel"><h3>Complexity distribution</h3><p>All {e(r.get("functions_total", 0))} functions by '
+            f"CCN band. A healthy codebase is mostly low bands; a tail on the right is where splitting pays off."
+            f'</p>{charts.histogram(r.get("distribution", []), threshold)}</div>'
+            f'<div class="panel"><h3>Size and complexity by file</h3><p>Each box is a file, sized by code lines and '
+            f"shaded by branches per 100 lines. Large, dark boxes hold the most logic to untangle.</p>"
+            f'{charts.treemap(r.get("files", []))}</div></div></section>')
 
 
 def _ticks(mx: int) -> list[int]:
@@ -327,6 +336,9 @@ def _structure(s: dict, min_in: int, min_out: int) -> str:
                      [[f'<code>{e(c["path"])}</code>', e(c["symbols"]), e(c["code_lines"])] for c in s["crowded_files"]])
     return ('<section><div class="section-head"><h2>Structure</h2><p>How the files depend on each other. '
             "Calls the resolver could only guess at are left out.</p></div>"
+            f'<div class="panel"><h3>Dependency layers</h3><p>Files arranged by what they call. Entry points sit at the '
+            f"top and foundations at the bottom; each arrow points from caller to callee. In a clean layering every "
+            f"arrow points down.</p>{charts.dependency_layers(s.get('layers', []), s.get('file_deps', []))}</div>"
             '<div class="grid-2">'
             f'<div class="panel"><h3>Coupling between files</h3><p>Calls between each pair of files, both directions '
             f"combined. Darker cells are more tightly coupled.</p>{_matrix(s['coupling'])}</div>"
@@ -367,7 +379,7 @@ def to_html(rep: dict, complex_ccn: int = 15, hub_in: int = 3, hub_out: int = 5)
     name = Path(rep["root"]).name or "codebase"
     parts = [f"<title>{e(name)} code report</title>",
              '<meta name="claude:viewport-fit-sides" content="cover">',
-             FONTS, f"<style>{CSS}</style>", '<main class="page">', _header(rep), _tiles(rep)]
+             FONTS, f"<style>{CSS}{charts.CHART_CSS}</style>", '<main class="page">', _header(rep), _tiles(rep)]
     if "recommendations" in rep:
         parts.append(_recommendations(rep["recommendations"]))
     if "risk" in rep:
