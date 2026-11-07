@@ -289,14 +289,22 @@ def _scatter(hubs: list[dict], min_in: int, min_out: int) -> str:
             f'{frame}{"".join(pts)}</svg>')
 
 
+def _file_labels(files: list[str]) -> dict[str, str]:
+    """Bare file names, falling back to the shortest unique path where two files share a name."""
+    short = _short_paths(files)
+    names = [Path(f).name for f in files]
+    return {f: Path(f).name if names.count(Path(f).name) == 1 else short[f] for f in files}
+
+
 def _matrix(coupling: list[dict]) -> str:
     if not coupling:
         return '<p class="empty">No cross-file calls.</p>'
     files = sorted({c["path"] for c in coupling} | {c["other"] for c in coupling})
-    short = _short_paths(files)
+    label = _file_labels(files)
     n = {(c["path"], c["other"]): int(c["calls"]) for c in coupling}
     top = max(n.values())
-    head = '<tr><th></th>' + "".join(f'<th class="col"><span class="mono">{e(short[f])}</span></th>' for f in files) + "</tr>"
+    head = '<tr><th></th>' + "".join(f'<th class="col" title="{e(f)}"><span class="mono">{e(label[f])}</span></th>'
+                                     for f in files) + "</tr>"
     rows = []
     for a in files:
         cells = []
@@ -310,9 +318,9 @@ def _matrix(coupling: list[dict]) -> str:
                 continue
             pct = 18 + v / top * 82
             fg = "var(--on-accent)" if pct > 55 else "var(--fg)"
-            cells.append(f'<td class="cell" title="{e(short[a])} ↔ {e(short[b])}: {v} calls" '
+            cells.append(f'<td class="cell" title="{e(a)} ↔ {e(b)}: {v} calls" '
                          f'style="background:color-mix(in oklab, var(--accent) {pct:.0f}%, var(--surface));color:{fg}">{v}</td>')
-        rows.append(f'<tr><th class="row"><span class="mono">{e(short[a])}</span></th>{"".join(cells)}</tr>')
+        rows.append(f'<tr><th class="row" title="{e(a)}"><span class="mono">{e(label[a])}</span></th>{"".join(cells)}</tr>')
     return f'<div class="scroll"><table class="matrix">{head}{"".join(rows)}</table></div>'
 
 
@@ -346,7 +354,7 @@ def _structure(s: dict, min_in: int, min_out: int) -> str:
             f"{report_graph.panel(s.get('call_graph'))}"
             '<div class="grid-2">'
             f'<div class="panel"><h3>Coupling between files</h3><p>Calls between each pair of files, both directions '
-            f"combined. Darker cells are more tightly coupled.</p>{_matrix(s['coupling'])}</div>"
+            f"combined. Darker cells are more tightly coupled. Hover a name for its full path.</p>{_matrix(s['coupling'])}</div>"
             f'<div class="panel"><h3>Hub functions</h3><p>Callers against callees per function. In the shaded zone '
             f"(at least {min_in} callers and {min_out} callees), a change ripples both ways. Hover a point for "
             f"its location.</p>{_scatter(s['hubs'], min_in, min_out)}</div></div>"

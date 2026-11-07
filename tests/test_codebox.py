@@ -184,3 +184,19 @@ def test_member_call_not_linked_to_nested_function(tmp_path):
     (tmp_path / "b.py").write_text("import re\n\ndef parse(s):\n    m = re.match('x', s)\n    return m.group(1)\n")
     graph.build_index(str(tmp_path))
     assert names(graph.callers(str(tmp_path), "outer.group"), "caller") == {"outer"}
+
+
+def test_plugin_skills_are_real_files():
+    # Codex drops symlinks when it installs a plugin, so skills/ must hold real files that match the packaged skill.
+    root = Path(__file__).parent.parent
+    for d in (root / "skills").iterdir():
+        assert not d.is_symlink() and (d / "SKILL.md").is_file(), d
+    assert (root / "skills/codebox/SKILL.md").read_text() == (root / "src/codebox/skill/SKILL.md").read_text()
+
+
+def test_coupling_matrix_uses_file_names():
+    from codebox.report_html import _matrix
+    page = _matrix([{"path": "src/pkg/a.py", "other": "src/pkg/b.py", "calls": 3},
+                    {"path": "src/pkg/a.py", "other": "lib/b.py", "calls": 1}])
+    assert '>a.py<' in page and 'title="src/pkg/a.py"' in page
+    assert '>b.py<' not in page  # two b.py files: keep enough path to tell them apart
