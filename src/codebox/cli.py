@@ -101,7 +101,8 @@ def main(argv: list[str] | None = None) -> int:
     rp.add_argument("--output", "-o", help="write the report to this file instead of stdout (.html/.json/.md picks the format)")
     rp.add_argument("--format", "-f", choices=("markdown", "html", "json"), help="output format (default: markdown, or from -o's extension)")
     rp.add_argument("--exclude", action="append",
-                    help=f"path prefix to leave out (repeatable; default: {' '.join(report.DEFAULT_EXCLUDE)})")
+                    help=f"path prefix to leave out, at the root or nested (repeatable; default: {' '.join(report.DEFAULT_EXCLUDE)}). "
+                         "Test files by name (test_*.py, *.test.tsx, ...) are always left out")
     rp.add_argument("--top", type=int, default=15, help="rows per table")
     rp.add_argument("--days", type=int, default=180, help="git history window for hotspots")
     for p in sub.choices.values():

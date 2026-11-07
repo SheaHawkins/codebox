@@ -134,8 +134,9 @@ def code_report(kind: str = "all", format: str = "markdown", output: str | None 
     misplaced functions, crowded files), risk (complex functions, hotspots) or deadcode (verified candidates).
     format: markdown, html (a self-contained visual page that can be published as a claude.ai Artifact as-is)
     or json. output: file path to write instead of returning the content (relative to root); returns the path
-    plus the ranked recommendations. Prefer output for html. exclude: path prefixes to leave out
-    (default: tests/, test/, testdata/, fixtures/)."""
+    plus the ranked recommendations. Prefer output for html. exclude: path prefixes to leave out,
+    matched at the root or nested (default: tests/, test/, testdata/, fixtures/). Test files by name (test_*.py,
+    *_test.go, *.test.tsx, *.spec.ts) are left out too; pass an empty list to analyse everything."""
     rep = report.build(root, kind, tuple(exclude) if exclude is not None else report.DEFAULT_EXCLUDE, top, days)
     if output:
         path = report.write(rep, output, format, root)

@@ -169,6 +169,7 @@ def test_call_graph_panel(repo):
     assert "<h3>Call graph</h3>" in page and "cdnjs.cloudflare.com/ajax/libs/d3/7.9.0/d3.min.js" in page
     data = re.search(r'<script type="application/json" id="fg-data">(.*?)</script>', page, re.S).group(1)
     assert json.loads(data)["calls"] == cg["calls"]
+    assert any(f["source"] == "app.py" and f["target"] == "util.py" for f in cg["file_calls"])
 
 
 def test_squarify_fills_area():
@@ -200,3 +201,98 @@ def test_coupling_matrix_uses_file_names():
                     {"path": "src/pkg/a.py", "other": "lib/b.py", "calls": 1}])
     assert '>a.py<' in page and 'title="src/pkg/a.py"' in page
     assert '>b.py<' not in page  # two b.py files: keep enough path to tell them apart
+
+
+def _write(root: Path, files: dict[str, str]) -> str:
+    for rel, text in files.items():
+        (root / rel).parent.mkdir(parents=True, exist_ok=True)
+        (root / rel).write_text(text)
+    graph.build_index(str(root))
+    return str(root)
+
+
+def test_calls_never_cross_languages(tmp_path):
+    # A TypeScript test calling run() must not resolve to a Python function that happens to be named run.
+    repo = _write(tmp_path, {"svc/runner.py": "def run():\n    return 1\n",
+                             "web/app.test.tsx": "it('x', () => { run(); });\n"})
+    assert graph.callers(repo, "run") == []
+
+
+def test_imported_name_resolves_to_its_module(tmp_path):
+    # Three packages each define main(); `from pkg.cli.__main__ import main` must link to that one only.
+    repo = _write(tmp_path, {
+        "pkg/cli/__main__.py": "def main():\n    return 0\n",
+        "pkg/web/__main__.py": "def main():\n    return 0\n",
+        "pkg/worker/__main__.py": "def main():\n    return 0\n",
+        "scripts/go.py": "from pkg.cli.__main__ import main\n\ndef go():\n    return main()\n",
+        "scripts/mod.py": "from pkg.web import __main__ as web\n\ndef go():\n    return web.main()\n",
+        "scripts/ext.py": "from os.path import join\n\ndef join_all():\n    return join('a', 'b')\n",
+        "lib/paths.py": "def join(a, b):\n    return a + b\n"})
+    rows = graph.run_query(repo, "MATCH (a:Symbol)-[r:CALLS]->(b:Symbol {name:'main'}) "
+                                 "RETURN a.path AS src, b.path AS dst, r.confidence AS c ORDER BY src")
+    assert [(r["src"], r["dst"], r["c"]) for r in rows] == [
+        ("scripts/go.py", "pkg/cli/__main__.py", "imported"),
+        ("scripts/mod.py", "pkg/web/__main__.py", "imported")]
+    # join comes from os.path, not from the project's lib/paths.py
+    assert graph.callers(repo, "join") == []
+
+
+def test_report_leaves_test_callers_out(tmp_path):
+    from codebox import report
+    body = "".join(f"    step{i}()\n" for i in range(6))
+    body += "".join(f"    x{i} = {i}\n" for i in range(45))  # real work, so the hub rule applies
+    files = {"app/core.py": "".join(f"def step{i}():\n    return {i}\n\n" for i in range(6))
+                            + f"def hub():\n{body}",
+             "app/a.py": "from app.core import hub\n\ndef a():\n    hub()\n",
+             "app/b.py": "from app.core import hub\n\ndef b():\n    hub()\n",
+             "app/c.py": "from app.core import hub\n\ndef c():\n    hub()\n"}
+    files |= {f"app/test_{i}.py": f"from app.core import hub\n\ndef test_{i}():\n    hub()\n" for i in range(5)}
+    files |= {f"web/t{i}.test.tsx": "export {};\n" for i in range(2)}
+    repo = _write(tmp_path, files)
+    s = report.structure(repo)
+    hub = next(h for h in s["hubs"] if h["symbol"] == "hub")
+    assert hub["fan_in"] == 3  # a, b, c; the five test_*.py callers are left out
+    assert all(not report._excluded(f["path"], report.DEFAULT_EXCLUDE) for f in s["call_graph"]["files"])
+    assert not any(f["path"].endswith(".test.tsx") for f in s["call_graph"]["files"])
+    rec = next(r for r in report.build(repo)["recommendations"] if r["kind"] == "decouple_hub")
+    assert rec["cost"].startswith("3 caller file(s)")
+    assert report._excluded("web/x.spec.ts", ("tests/",)) and not report._excluded("web/x.ts", ("tests/",))
+    assert not report._excluded("app/test_0.py", ())  # an empty exclude analyses everything
+
+
+def test_deadcode_skips_dunder_methods(tmp_path):
+    from codebox import report
+    repo = _write(tmp_path, {"m.py": "class A:\n    def __init__(self):\n        pass\n\n"
+                                     "    def __call__(self):\n        pass\n"})
+    d = report.deadcode(repo)
+    assert not any(x["symbol"].endswith("__") for k in ("likely_dead", "mentioned_elsewhere")
+                   for x in d[k])
+
+
+def test_index_from_another_version_is_stale(tmp_path):
+    import json
+    repo = _write(tmp_path, {"a.py": "def f():\n    return 1\n"})
+    assert not graph.is_stale(Path(repo))
+    meta = Path(repo) / ".codebox" / "meta.json"
+    meta.write_text(json.dumps({**json.loads(meta.read_text()), "version": "0.0.1"}))
+    assert graph.is_stale(Path(repo))
+
+
+def test_thin_dispatcher_is_not_a_hub(tmp_path):
+    # Same fan-in (3) and fan-out (5); only the one with real work behind it is worth decoupling.
+    steps = "".join(f"def s{i}():\n    return {i}\n\n" for i in range(5))
+    calls = "".join(f"    s{i}()\n" for i in range(5))
+    filler = "".join(f"    x{i} = {i}\n" for i in range(45))
+    callers = "".join(f"def c{i}():\n    thin()\n    fat()\n\n" for i in range(3))
+    (tmp_path / "m.py").write_text(steps + f"def thin():\n{calls}\n" + f"def fat():\n{calls}{filler}\n" + callers)
+    from codebox import report
+    graph.build_index(str(tmp_path))
+    recs = report.recommendations(str(tmp_path), report.structure(str(tmp_path), ()), None, None, exclude=())
+    hubs = {r["what"] for r in recs if r["kind"] == "decouple_hub"}
+    assert any("`fat`" in w for w in hubs) and not any("`thin`" in w for w in hubs)
+
+
+def test_graph_script_is_ascii():
+    # The page is ASCII-encoded with entities; inside <script> an entity would show up literally in tooltips.
+    from codebox.report_graph import SCRIPT
+    assert SCRIPT.isascii()

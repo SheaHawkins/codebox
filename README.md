@@ -51,6 +51,30 @@ The plugin's `report` skill builds a visual report (ranked recommendations, a de
 - **Claude Code:** run `/codebox:report`. The page is published as a private Artifact you can open from the session.
 - **Codex:** mention the skill with `$report` (or pick it from `/skills`), or just ask for a codebox report. The page is saved to `.codebox/report.html` and Codex gives you the command to open it.
 
+#### What the report looks like
+
+Screenshots from a report on an 800-file Python and TypeScript monorepo. The page follows your light or dark theme.
+
+Ranked recommendations, each with its evidence, the expected gain, and the cost of making the change:
+
+![Report header, summary tiles and ranked recommendations](docs/images/overview.png)
+
+An interactive call graph. Drag nodes, zoom, hover to trace callers and callees, and search. **Functions** shows the most connected functions, colored by file:
+
+![Call graph, functions view](docs/images/call-graph.png)
+
+**Files** shows calls between files, colored by directory. Red edges are files that call each other:
+
+![Call graph, files view, dark theme](docs/images/call-graph-files.png)
+
+Dependency layers. Entry points are at the top and foundations at the bottom; an arrow pointing up is a layering violation:
+
+![Dependency layers](docs/images/dependency-layers.png)
+
+Where the complexity is: functions by CCN band, and files sized by code lines and shaded by branches per 100 lines:
+
+![Complexity distribution and size-by-complexity treemap](docs/images/risk.png)
+
 ### CLI with uv
 
 Install the CLI to use codebox from a terminal, or to register it with other agents (Cursor, Gemini CLI, …). It needs Python 3.11–3.14.
@@ -122,6 +146,8 @@ uv sync && uv run pytest
 ```
 
 Layout: `src/codebox/{discover,parse,graph,analyze,report,report_html,report_charts,report_graph,server,cli,setup_agents}.py`. The skill lives in `src/codebox/skill/` so that it ships inside the wheel; `skills/codebox` holds a copy for plugins and skills.sh (Codex skips symlinks), and `skills/report` is the plugin's report skill.
+
+The README screenshots come from `scripts/readme_screenshots.py`, which renders panels of an HTML report in headless Chrome.
 
 ## Roadmap
 

@@ -161,7 +161,8 @@ def _header(rep: dict) -> str:
             f"<h1>{e(name)}</h1>"
             f'<p class="muted"><span class="mono">{e(rep["root"])}</span> · generated {e(rep["generated"])} · '
             f"{e(st['files'])} files ({e(langs)})</p>"
-            f'<p class="muted">Excluded from analysis: {excl}.</p></header>')
+            f'<p class="muted">Excluded from analysis: {excl}'
+            f'{", plus test files by name (test_*.py, *.test.tsx, …)" if rep["exclude"] else ""}.</p></header>')
 
 
 def _tiles(rep: dict) -> str:
@@ -290,10 +291,16 @@ def _scatter(hubs: list[dict], min_in: int, min_out: int) -> str:
 
 
 def _file_labels(files: list[str]) -> dict[str, str]:
-    """Bare file names, falling back to the shortest unique path where two files share a name."""
-    short = _short_paths(files)
-    names = [Path(f).name for f in files]
-    return {f: Path(f).name if names.count(Path(f).name) == 1 else short[f] for f in files}
+    """Bare file names; where two files share a name, the shortest path suffix that tells them apart."""
+    out = {}
+    for f in files:
+        parts = f.split("/")
+        n = 1
+        # add parent folders until no other file ends the same way
+        while n < len(parts) and any(o != f and o.split("/")[-n:] == parts[-n:] for o in files):
+            n += 1
+        out[f] = "/".join(parts[-n:])
+    return out
 
 
 def _matrix(coupling: list[dict]) -> str:

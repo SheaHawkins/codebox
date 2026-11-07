@@ -86,18 +86,10 @@ SCRIPT = r"""
 
   function filesData() {
     const size = new Map(DATA.files.map(f => [f.path, f.code_lines]));
-    const agg = new Map();
-    for (const c of DATA.calls) {
-      const a = DATA.byId.get(c.source).path, b = DATA.byId.get(c.target).path;
-      if (a === b) continue;
-      const k = a + '\u0000' + b, cur = agg.get(k);
-      if (cur) { cur.calls += c.calls; cur.line = Math.min(cur.line, c.line); }
-      else agg.set(k, {source: a, target: b, calls: c.calls, line: c.line});
-    }
-    const links = [...agg.values()];
+    const links = DATA.file_calls.map(c => ({...c}));
     const ids = new Set(links.flatMap(l => [l.source, l.target]));
-    DATA.files.forEach(f => ids.add(f.path));
-    const nodes = [...ids].map(p => ({id: p, label: base(p), group: dir(p), size: size.get(p) || 1, path: p, line: 1,
+    const short = suffixes([...ids]);
+    const nodes = [...ids].map(p => ({id: p, label: short.get(p), group: dir(p), size: size.get(p) || 1, path: p, line: 1,
                                       detail: `${size.get(p) || 0} code lines`}));
     if (new Set(nodes.map(n => n.group)).size === 1) {
       // One directory: color each file as the Functions view does, so the two views read together.
@@ -108,16 +100,41 @@ SCRIPT = r"""
     return {nodes, links, unit: 'calls'};
   }
 
+  // Shortest path suffix that tells each file apart from the others (api.py vs web/api.py vs cli/api.py).
+  function suffixes(paths) {
+    const out = new Map();
+    for (const p of paths) {
+      const parts = p.split('/');
+      let n = 1;
+      while (n < parts.length && paths.some(o => o !== p && o.split('/').slice(-n).join('/') === parts.slice(-n).join('/'))) n++;
+      out.set(p, parts.slice(-n).join('/'));
+    }
+    return out;
+  }
+
+  // Connected components smaller than `min` nodes (lone caller/callee pairs) are hidden: they carry no structure.
+  function bigComponents(nodes, links, min) {
+    const parent = new Map(nodes.map(n => [n.id, n.id]));
+    const find = x => { while (parent.get(x) !== x) { parent.set(x, parent.get(parent.get(x))); x = parent.get(x); } return x; };
+    links.forEach(l => parent.set(find(l.source), find(l.target)));
+    const size = d3.rollup(nodes, v => v.length, n => find(n.id));
+    const keep = new Set(nodes.filter(n => size.get(find(n.id)) >= min).map(n => n.id));
+    return {nodes: nodes.filter(n => keep.has(n.id)), links: links.filter(l => keep.has(l.source)),
+            hidden: nodes.length - keep.size};
+  }
+
   function functionsData() {
-    const nodes = DATA.functions.map(f => ({id: f.id, label: f.name.split('.').pop(), group: base(f.path), size: f.lines,
-      path: f.path, line: f.line, name: f.name, detail: `${f.kind} · ${f.lines} lines`}));
+    const label = suffixes([...new Set(DATA.functions.map(f => f.path))]);
+    const all = DATA.functions.map(f => ({id: f.id, label: f.name.split('.').pop(), group: label.get(f.path), size: f.lines,
+      path: f.path, line: f.line, name: f.name, detail: `${f.kind} \u00b7 ${f.lines} lines`}));
     const links = DATA.calls.map(c => ({source: c.source, target: c.target, calls: c.calls, line: c.line}));
-    return {nodes, links, unit: 'call sites'};
+    return {...bigComponents(all, links, 3), unit: 'call sites'};
   }
 
   function draw() {
-    const {nodes, links, unit, weighted} = view === 'files' ? filesData() : functionsData();
+    const {nodes, links, unit, weighted, hidden} = view === 'files' ? filesData() : functionsData();
     const color = palette(weighted ? nodes.flatMap(n => Array(n.weight).fill(n)) : nodes, d => d.group);
+    if (hidden) legendEl.insertAdjacentHTML('beforeend', `<span>${hidden} functions in isolated pairs not shown</span>`);
     const svg = d3.select(svgEl); svg.selectAll('*').remove();
     const W = svgEl.clientWidth || 960, H = svgEl.clientHeight || 560;
     svg.attr('viewBox', [0, 0, W, H]);
@@ -127,7 +144,7 @@ SCRIPT = r"""
       .append('path').attr('d', 'M0,-4L8,0L0,4').attr('class', d => d === 'cyc' ? 'ah cyc' : 'ah');
     const root = svg.append('g');
     // Pan by dragging the background; zoom with pinch or ctrl/cmd + wheel so the page still scrolls.
-    zoom = d3.zoom().scaleExtent([0.2, 6])
+    zoom = d3.zoom().scaleExtent([0.05, 8])
       .filter(ev => ev.type === 'wheel' ? (ev.ctrlKey || ev.metaKey) : !ev.button)
       .on('zoom', ev => root.attr('transform', ev.transform));
     svg.call(zoom).on('dblclick.zoom', null);
@@ -138,13 +155,20 @@ SCRIPT = r"""
     nodes.forEach(n => { n.r = r(n.size); });
     const w = d3.scaleSqrt().domain([1, d3.max(links, l => l.calls) || 1]).range([1, 4]);
     const degree = d3.rollup(links.flatMap(l => [l.source, l.target]), v => v.length, d => d);
-    const labelled = n => view === 'files' || nodes.length <= 60 || (degree.get(n.id) || 0) >= 4;
+    // Small graphs label every node; big ones only the 40 best connected (hover names the rest).
+    const ranked = new Set(nodes.map(n => n.id).sort((a, b) => (degree.get(b) || 0) - (degree.get(a) || 0)).slice(0, 40));
+    const labelled = n => nodes.length <= 60 || ranked.has(n.id);
 
+    // Repulsion shrinks as the graph grows and only acts nearby, so big graphs stay one connected cloud;
+    // gravity toward the centre keeps separate components from drifting off.
+    const crowd = Math.sqrt(Math.max(1, nodes.length / 40));
     const sim = d3.forceSimulation(nodes)
-      .force('link', d3.forceLink(links).id(d => d.id).distance(view === 'files' ? 120 : 46).strength(0.3))
-      .force('charge', d3.forceManyBody().strength(view === 'files' ? -520 : -120))
-      .force('collide', d3.forceCollide(d => d.r + 4))
-      .force('x', d3.forceX(W / 2).strength(view === 'files' ? 0.06 : 0.1)).force('y', d3.forceY(H / 2).strength(view === 'files' ? 0.09 : 0.14));
+      .force('link', d3.forceLink(links).id(d => d.id).distance(d => (view === 'files' ? 90 : 40) / Math.sqrt(crowd)).strength(0.4))
+      .force('charge', d3.forceManyBody().strength((view === 'files' ? -420 : -140) / crowd).distanceMax(view === 'files' ? 400 : 220))
+      .force('collide', d3.forceCollide(d => d.r + 3))
+      .force('x', d3.forceX(W / 2).strength(0.08)).force('y', d3.forceY(H / 2).strength(0.08))
+      .stop();
+    for (let i = 0; i < 300; i++) sim.tick();  // settle before the first paint: no nodes flying in from the edges
 
     const link = root.append('g').selectAll('path').data(links).join('path')
       .attr('class', d => d.cycle ? 'lnk cyc' : 'lnk').attr('stroke-width', d => w(d.calls))
@@ -176,18 +200,16 @@ SCRIPT = r"""
     }
     current = {focus, nodes};
     const nodeTip = d => `<b>${esc(d.name || d.path)}</b><span>${esc(d.path)}:${d.line}</span><br>${esc(d.detail)}<br>`
-      + `calls ${callees.get(d.id)} · called by ${callers.get(d.id)} ${view === 'files' ? 'files' : 'functions'}`;
+      + `calls ${callees.get(d.id)} \u00b7 called by ${callers.get(d.id)} ${view === 'files' ? 'files' : 'functions'}`;
     node.on('mousemove', (ev, d) => { if (!pinned) focus(d.id); showTip(ev, nodeTip(d)); })
         .on('mouseleave', () => { if (!pinned) focus(null); hideTip(); })
         .on('click', (ev, d) => { ev.stopPropagation(); pinned = pinned === d.id ? null : d.id; focus(pinned || d.id); });
-    link.on('mousemove', (ev, d) => showTip(ev, `<b>${esc(d.source.label)} → ${esc(d.target.label)}</b>`
-          + `<span>${esc(d.source.path)}:${d.line}</span><br>${d.calls} ${unit}${d.cycle ? ' · also called back' : ''}`))
+    link.on('mousemove', (ev, d) => showTip(ev, `<b>${esc(d.source.label)} \u2192 ${esc(d.target.label)}</b>`
+          + `<span>${esc(d.source.path)}:${d.line}</span><br>${d.calls} ${unit}${d.cycle ? ' \u00b7 also called back' : ''}`))
         .on('mouseleave', hideTip);
     svg.on('click', () => { pinned = null; focus(null); });
 
-    sim.on('tick', () => {
-      nodes.forEach(d => { d.x = Math.max(d.r + 2, Math.min(W - d.r - 2, d.x));
-                           d.y = Math.max(d.r + 16, Math.min(H - d.r - 2, d.y)); });
+    function paint() {
       link.attr('d', d => {
         const dx = d.target.x - d.source.x, dy = d.target.y - d.source.y, len = Math.hypot(dx, dy) || 1;
         const ux = dx / len, uy = dy / len, bend = d.cycle ? 0.18 * len : 0;  // bow two-way edges apart
@@ -197,7 +219,14 @@ SCRIPT = r"""
       });
       node.attr('cx', d => d.x).attr('cy', d => d.y);
       label.attr('x', d => d.x).attr('y', d => d.y - d.r - 4);
-    });
+    }
+    paint();
+    sim.on('tick', paint);
+    // Fit the settled layout to the stage.
+    const x0 = d3.min(nodes, d => d.x - d.r), x1 = d3.max(nodes, d => d.x + d.r);
+    const y0 = d3.min(nodes, d => d.y - d.r - 14), y1 = d3.max(nodes, d => d.y + d.r);
+    const k = Math.min(1.6, 0.94 * Math.min(W / (x1 - x0 || 1), H / (y1 - y0 || 1)));
+    svg.call(zoom.transform, d3.zoomIdentity.translate(W / 2 - k * (x0 + x1) / 2, H / 2 - k * (y0 + y1) / 2).scale(k));
     if (search.value) find();
   }
 
@@ -207,7 +236,6 @@ SCRIPT = r"""
     current.focus(hit ? hit.id : null);
   }
 
-  DATA.byId = new Map(DATA.functions.map(f => [f.id, f]));
   const buttons = document.querySelectorAll('#fg-view button');
   function select(v) {
     view = v;

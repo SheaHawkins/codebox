@@ -24,6 +24,7 @@ Arguments come from the user's request (in Claude Code, also from `$ARGUMENTS`):
    - the artifact link, or the file path;
    - one line of size stats (files, symbols);
    - the top three recommendations, each with its `path:line` and one sentence on whether it holds up after reading the code;
-   - anything the report got wrong, such as a "likely dead" function that is actually used.
+   - **Checked and correct:** other findings you verified and found right, such as dead code that really is unused;
+   - **Wrong:** only findings that turned out false, such as a "likely dead" function that is actually used, or a hub whose callers are mostly tests. If nothing was wrong, say so in one line. Never put a confirmed finding under this heading.
 
 Don't change any code. The report is for deciding what to do next.

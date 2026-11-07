@@ -17,6 +17,7 @@ DEFAULT_EXCLUDE = ("tests/", "test/", "testdata/", "fixtures/")
 COMPLEX_CCN = 15
 HUB_MIN_FAN_IN = 3
 HUB_MIN_FAN_OUT = 5
+HUB_MIN_LINES = 40  # a hub must also do real work: this many code lines, or CCN >= COMPLEX_CCN
 CROWDED_SYMBOLS = 40
 CROWDED_LINES = 500
 TOP_HOTSPOTS = 5
@@ -26,17 +27,29 @@ LIMITATIONS = [
     "Recommendations come from fixed thresholds on the metrics. Read the code before acting on them.",
     "Dead-code checks are textual: a name mentioned anywhere else counts as used, which can hide dead code "
     "that shares a name with something live.",
-    "The interactive call graph shows the 600 busiest unambiguous call edges and loads d3 from cdnjs.",
+    "A hub is only recommended for decoupling when it is also big or complex; thin dispatchers are left out.",
+    "The interactive call graph shows the 240 most connected functions (and the 400 busiest file pairs); it loads d3 from cdnjs.",
 ]
 
 
+# Test files that live beside the code they test: test_x.py, x_test.go, conftest.py, x.test.tsx, x.spec.ts.
+# Written with [.] rather than \. so it survives embedding in a Cypher string literal unchanged.
+TEST_FILE = (r"(^|/)(test_[^/]*[.]py|conftest[.]py|[^/]*_test[.](py|go)"
+             r"|[^/]*[.](test|spec)[.][cm]?[jt]sx?)$")
+
+
 def _excluded(path: str, exclude: tuple[str, ...]) -> bool:
-    return any(path.startswith(e) or f"/{e}" in f"/{path}" for e in exclude)
+    """Excluded paths: anything under an `exclude` prefix (at the root or nested), plus test files by name
+    whenever `exclude` is non-empty. An empty `exclude` analyses everything."""
+    return bool(exclude) and (any(path.startswith(e) or f"/{e}" in f"/{path}" for e in exclude)
+                              or re.search(TEST_FILE, path) is not None)
 
 
 def _path_filter(var: str, exclude: tuple[str, ...]) -> str:
+    if not exclude:
+        return ""
     return "".join(f" AND NOT {var}.path STARTS WITH '{e}' AND NOT {var}.path CONTAINS '/{e}'"
-                   for e in exclude if re.fullmatch(r"[\w./-]+", e))
+                   for e in exclude if re.fullmatch(r"[\w./-]+", e)) + f" AND NOT regexp_matches({var}.path, '{TEST_FILE}')"
 
 
 # --------------------------------------------------------------------------- structure
@@ -69,7 +82,7 @@ def structure(root, exclude=DEFAULT_EXCLUDE, top: int = 15) -> dict:
     hubs = q(root, f"""
         MATCH (c:Symbol)-[r1:CALLS]->(s:Symbol)-[r2:CALLS]->(d:Symbol)
         WHERE s.kind <> 'module' AND r1.confidence <> 'ambiguous' AND r2.confidence <> 'ambiguous'
-              {_path_filter('s', exclude)}
+              {_path_filter('s', exclude)} {_path_filter('c', exclude)} {_path_filter('d', exclude)}
         WITH s, count(DISTINCT c) AS fan_in, count(DISTINCT d) AS fan_out
         WHERE fan_in >= 2 AND fan_out >= 2
         RETURN s.qualname AS symbol, s.path AS path, s.start_line AS line, fan_in, fan_out
@@ -77,7 +90,8 @@ def structure(root, exclude=DEFAULT_EXCLUDE, top: int = 15) -> dict:
 
     misplaced = q(root, f"""
         MATCH (c:Symbol)-[r:CALLS]->(s:Symbol)
-        WHERE s.kind IN ['function','method'] AND r.confidence <> 'ambiguous' {_path_filter('s', exclude)}
+        WHERE s.kind IN ['function','method'] AND r.confidence <> 'ambiguous'
+              {_path_filter('s', exclude)} {_path_filter('c', exclude)}
         WITH s, count(*) AS calls, collect(DISTINCT c.path) AS from_files
         WHERE size(from_files) = 1 AND from_files[1] <> s.path AND calls >= 2
         RETURN s.qualname AS symbol, s.path AS path, s.start_line AS line,
@@ -101,28 +115,41 @@ def structure(root, exclude=DEFAULT_EXCLUDE, top: int = 15) -> dict:
             "file_deps": deps, "layers": layers(deps), "call_graph": call_graph(root, exclude)}
 
 
-def call_graph(root, exclude=DEFAULT_EXCLUDE, max_edges: int = 600) -> dict:
-    """Function-level call edges (ambiguous ones left out) plus every file's size, for the interactive graph.
-    Keeps the `max_edges` busiest edges."""
+def call_graph(root, exclude=DEFAULT_EXCLUDE, max_functions: int = 240, max_file_edges: int = 400) -> dict:
+    """Data for the interactive graph, from every unambiguous call edge.
+    functions/calls: the `max_functions` most connected functions and the calls among them, so the picture is
+    the connected core of the code rather than a scatter of unrelated busy pairs.
+    file_calls: calls aggregated per pair of files (the busiest `max_file_edges`). files: every file's size."""
     rows = graph.run_query(root, f"""
         MATCH (a:Symbol)-[r:CALLS]->(b:Symbol)
         WHERE r.confidence <> 'ambiguous' AND a.id <> b.id {_path_filter('a', exclude)} {_path_filter('b', exclude)}
         RETURN a.id AS source, b.id AS target, min(r.line) AS line, count(*) AS calls,
                a.qualname AS a_name, a.kind AS a_kind, a.path AS a_path, a.start_line AS a_line, a.end_line AS a_end,
                b.qualname AS b_name, b.kind AS b_kind, b.path AS b_path, b.start_line AS b_line, b.end_line AS b_end
-        ORDER BY calls DESC LIMIT $n""", {"n": max_edges}, limit=max_edges, auto_index=False)
-    nodes: dict[str, dict] = {}
-    edges = []
+        """, limit=1_000_000, auto_index=False)
+    info: dict[str, dict] = {}
+    neighbours: dict[str, set[str]] = {}
+    per_file: dict[tuple[str, str], dict] = {}
     for r in rows:
         for side, key in (("a", "source"), ("b", "target")):
-            nodes.setdefault(r[key], {"id": r[key], "name": r[f"{side}_name"], "kind": r[f"{side}_kind"],
-                                      "path": r[f"{side}_path"], "line": r[f"{side}_line"],
-                                      "lines": max(1, (r[f"{side}_end"] or 0) - (r[f"{side}_line"] or 0) + 1)})
-        edges.append({"source": r["source"], "target": r["target"], "line": r["line"], "calls": r["calls"]})
+            info.setdefault(r[key], {"id": r[key], "name": r[f"{side}_name"], "kind": r[f"{side}_kind"],
+                                     "path": r[f"{side}_path"], "line": r[f"{side}_line"],
+                                     "lines": max(1, (r[f"{side}_end"] or 0) - (r[f"{side}_line"] or 0) + 1)})
+        neighbours.setdefault(r["source"], set()).add(r["target"])
+        neighbours.setdefault(r["target"], set()).add(r["source"])
+        if r["a_path"] != r["b_path"]:
+            f = per_file.setdefault((r["a_path"], r["b_path"]), {"source": r["a_path"], "target": r["b_path"],
+                                                                 "calls": 0, "line": r["line"]})
+            f["calls"] += r["calls"]
+            f["line"] = min(f["line"], r["line"])
+    core = set(sorted(neighbours, key=lambda n: (-len(neighbours[n]), n))[:max_functions])
+    edges = [{"source": r["source"], "target": r["target"], "line": r["line"], "calls": r["calls"]}
+             for r in rows if r["source"] in core and r["target"] in core]
     files = [{"path": f["path"], "code_lines": f["code_lines"] or 0} for f in graph.run_query(
         root, "MATCH (f:File) RETURN f.path AS path, f.code_lines AS code_lines", limit=100_000, auto_index=False)
         if not _excluded(f["path"], exclude)]
-    return {"functions": list(nodes.values()), "calls": edges, "files": files}
+    return {"functions": [info[n] for n in sorted(core)], "calls": edges, "files": files,
+            "file_calls": sorted(per_file.values(), key=lambda f: -f["calls"])[:max_file_edges]}
 
 
 def layers(deps: list[dict], max_files: int = 24) -> list[dict]:
@@ -214,8 +241,11 @@ def _decorated(lines: list[str], line: int) -> bool:
 def deadcode(root, exclude=DEFAULT_EXCLUDE, limit: int = 200) -> dict:
     """Unreferenced functions, sorted into likely dead / registered by a decorator / mentioned elsewhere."""
     rootp = resolve_root(root)
+    def dunder(name: str) -> bool:  # __init__, __call__, __post_init__: invoked by the language, not by name
+        return name.startswith("__") and name.endswith("__")
     cands = [c for c in graph.unreferenced(root, limit=10_000)
-             if not _excluded(c["path"], exclude) and not c["symbol"].split(".")[-1].startswith("test_")]
+             if not _excluded(c["path"], exclude) and not c["symbol"].split(".")[-1].startswith("test_")
+             and not dunder(c["symbol"].split(".")[-1])]
     likely, decorated, mentioned = [], [], []
     texts: dict[str, list[str]] = {}
     for c in cands[:limit]:
@@ -272,18 +302,31 @@ def _rec_cycles(s: dict) -> list[dict]:
             for c in s.get("cycles", [])]
 
 
-def _rec_hubs(root, s: dict, hot: set[str]) -> list[dict]:
+def _own_size(root, path: str, line: int) -> dict | None:
+    """CCN and code lines of the function starting at path:line (lizard), or None if lizard didn't find it."""
+    funcs = analyze.complexity(root, path=path, min_ccn=1, limit=100_000)["functions"]
+    return next((f for f in funcs if f["path"] == path and f["line"] == line), None)
+
+
+def _rec_hubs(root, s: dict, hot: set[str], exclude=DEFAULT_EXCLUDE) -> list[dict]:
+    """Hubs with many callers and callees that also do real work. A thin dispatcher (a CLI `main`, a `build`
+    that calls five steps) has the same fan-in and fan-out, but there is nothing behind it to separate."""
     out = []
     for h in s.get("hubs", []):
         if h["fan_in"] < HUB_MIN_FAN_IN or h["fan_out"] < HUB_MIN_FAN_OUT:
             continue
+        own = _own_size(root, h["path"], h["line"])
+        if own and own["nloc"] < HUB_MIN_LINES and own["ccn"] < COMPLEX_CCN:
+            continue
         rows = graph.run_query(root, "MATCH (c:Symbol)-[r:CALLS]->(s:Symbol {qualname:$q, path:$p}) "
-                                     "WHERE r.confidence <> 'ambiguous' RETURN count(DISTINCT c.path) AS n",
+                                     f"WHERE r.confidence <> 'ambiguous' {_path_filter('c', exclude)} "
+                                     "RETURN count(DISTINCT c.path) AS n",
                                {"q": h["symbol"], "p": h["path"]}, auto_index=False)
         files = rows[0]["n"] if rows else 0
         out.append(_rec("decouple_hub", h["path"], h["line"],
                         f'Separate the interface of `{h["symbol"]}` from the work behind it',
-                        f'{h["fan_in"]} callers, {h["fan_out"]} callees',
+                        f'{h["fan_in"]} callers, {h["fan_out"]} callees'
+                        + (f', {own["nloc"]} lines, CCN {own["ccn"]}' if own else ""),
                         "internal changes stop rippling out to callers",
                         f"{files} caller file(s) depend on it",
                         h["fan_in"] * h["fan_out"] // 2 * (2 if h["path"] in hot else 1)))
@@ -323,7 +366,9 @@ def _merge(recs: list[dict]) -> list[dict]:
         key = (x["path"], x["line"])
         if key in by_loc:
             first = by_loc[key]
-            first["evidence"] += f'; also {x["evidence"]}'
+            new = [part for part in x["evidence"].split(", ") if part not in first["evidence"]]
+            if new:  # facts the first rule didn't already state
+                first["evidence"] += f'; also {", ".join(new)}'
             first["also"] = first.get("also", []) + [x["what"]]
             first["weight"] += x["weight"] // 2
         else:
@@ -331,10 +376,11 @@ def _merge(recs: list[dict]) -> list[dict]:
     return sorted(by_loc.values(), key=lambda x: -x["weight"])
 
 
-def recommendations(root, s: dict | None, r: dict | None, d: dict | None, top: int = 10) -> list[dict]:
+def recommendations(root, s: dict | None, r: dict | None, d: dict | None, top: int = 10,
+                    exclude=DEFAULT_EXCLUDE) -> list[dict]:
     s, r, d = s or {}, r or {}, d or {}
     hot = {h["path"] for h in r.get("hotspots", [])[:TOP_HOTSPOTS]}
-    recs = (_rec_complex(r, hot) + _rec_cycles(s) + _rec_hubs(root, s, hot) + _rec_misplaced(s)
+    recs = (_rec_complex(r, hot) + _rec_cycles(s) + _rec_hubs(root, s, hot, exclude) + _rec_misplaced(s)
             + _rec_crowded(s, hot) + _rec_dead(d))
     return _merge(recs)[:top]
 
@@ -357,7 +403,8 @@ def build(root=None, kind: str = "all", exclude=DEFAULT_EXCLUDE, top: int = 15, 
     if kind in ("all", "deadcode"):
         rep["deadcode"] = deadcode(root, exclude)
     if kind == "all":
-        rep["recommendations"] = recommendations(root, rep["structure"], rep["risk"], rep["deadcode"])
+        rep["recommendations"] = recommendations(root, rep["structure"], rep["risk"], rep["deadcode"],
+                                                 exclude=exclude)
     rep["limitations"] = LIMITATIONS
     return rep
 
@@ -391,7 +438,8 @@ def _md_header(rep: dict) -> list[str]:
     return [f'# {TITLES[rep["kind"]]}', "",
             f'`{rep["root"]}` · {rep["generated"]} · {st["files"]} files ({langs}), '
             f'{st["symbols"]} symbols, {st["calls_resolved"]} resolved calls', "",
-            f"Excluded paths: {excl}.", ""]
+            f"Excluded paths: {excl}" + (", plus test files by name (`test_*.py`, `*.test.tsx`, …)" if rep["exclude"] else "")
+            + ".", ""]
 
 
 def _md_recommendations(recs: list[dict]) -> list[str]:

@@ -27,6 +27,7 @@ from pathlib import Path
 
 import ladybug
 
+from . import __version__
 from .discover import resolve_root, source_files
 from .parse import FileFacts, Sym, parse_file
 
@@ -34,6 +35,10 @@ INDEX_DIR = ".codebox"
 DB_NAME = "graph.lbug"
 META_NAME = "meta.json"
 MAX_AMBIGUOUS = 3
+JS_FAMILY = {"javascript", "typescript", "tsx", "jsx"}
+# Language families whose imports _from_module reads. Others keep the looser rule: a name that appears in
+# any import line resolves to every same-named candidate.
+MODULE_AWARE = {"python", "js"}
 
 SCHEMA = [
     "CREATE NODE TABLE File(path STRING PRIMARY KEY, language STRING, lines INT64, code_lines INT64, parse_errors INT64)",
@@ -61,30 +66,84 @@ def _sym_id(path: str, s: Sym | None) -> str:
     return f"{path}#<module>" if s is None else f"{path}#{s.qualname}@{s.start_line}"
 
 
-def _module_names(path: str) -> set[str]:
-    """Names a file can be imported as: its stem, or its directory for package entry files."""
-    p = Path(path)
-    if p.stem in ("__init__", "index", "mod"):
-        return {p.parent.name} if p.parent.name else set()
-    return {p.stem}
+def _family(language: str) -> str:
+    """Languages that can call each other directly. A .tsx file never calls a Python function."""
+    return "js" if language in JS_FAMILY else language
 
 
-def _module_aliases(imports) -> dict[str, str]:
-    """Local name -> module name for imports that bind a module: `import util`, `from . import graph`,
-    `import a.b as x`, `import * as clock from './clock'`. Names that turn out to be classes or
-    functions are harmless: they only matter when a project file has that module name."""
-    out: dict[str, str] = {}
+def _from_module(imp) -> list[str] | None:
+    """Module path segments an import pulls names from: `from a.b import x` -> [a, b],
+    `import {x} from '../api'` -> [api]. None when the import names no module we can read."""
+    m = re.match(r"\s*from\s+([\w.]+)\s+import\b", imp.source)
+    if m:
+        return [s for s in m.group(1).split(".") if s]
+    m = re.search(r"""\bfrom\s+['"]([^'"]+)['"]""", imp.source)
+    if m:
+        parts = [p for p in re.sub(r"\.[cm]?[jt]sx?$", "", m.group(1)).split("/") if p not in ("", ".", "..")]
+        return parts[:-1] if parts and parts[-1] == "index" else parts
+    return None
+
+
+def _module_aliases(imports) -> dict[str, list[str]]:
+    """Local name -> module path segments for imports that bind a module: `import util`,
+    `from . import graph`, `from a.b import mod as x`, `import * as clock from './clock'`. Names that turn
+    out to be classes or functions are harmless: they only matter when a project file has that module path."""
+    out: dict[str, list[str]] = {}
     for imp in imports:
+        base = _from_module(imp)
+        is_plain = imp.source.lstrip().startswith("import ") and base is None
         for item in imp.items:
-            out.setdefault(item.split(".")[0] if imp.source.startswith("import ") else item, item.split(".")[-1])
+            if is_plain:
+                out.setdefault(item.split(".")[0], [item.split(".")[0]])
+            else:
+                out.setdefault(item, (base or []) + [item])
         for target, alias in re.findall(r"([\w.*]+)\s+as\s+(\w+)", imp.source):
             if target == "*":
-                m = re.search(r"""from\s+['"]([^'"]+)['"]""", imp.source)
-                if not m:
-                    continue
-                target = Path(m.group(1)).stem
-            out[alias] = target.split(".")[-1]
+                if base:
+                    out[alias] = base
+            elif is_plain:
+                out[alias] = target.split(".")
+            else:
+                out[alias] = (base or []) + target.split(".")
     return out
+
+
+def _imported_from(imports) -> dict[str, list[str]]:
+    """Name -> module path segments for names imported out of a module: `from a.b import x` maps x -> [a, b]."""
+    out: dict[str, list[str]] = {}
+    for imp in imports:
+        base = _from_module(imp)
+        if base:
+            for item in imp.items:
+                out.setdefault(item, base)
+    return out
+
+
+def _module_parts(path: str) -> list[str]:
+    """A file's import path: directories plus stem, with package entry files (`__init__`, `index`) dropped."""
+    p = Path(path)
+    parts = list(p.parent.parts)
+    return parts if p.stem in ("__init__", "index", "mod") else parts + [p.stem]
+
+
+def _match_len(segs: list[str], parts: list[str]) -> int:
+    """Longest tail of the import path `segs` found as a contiguous run in the file's `parts`.
+    `engine.apps.cli.__main__` scores 4 against apps/cli/src/engine/apps/cli/__main__.py and 1 against
+    apps/control_server/.../__main__.py. Matching anywhere, not only at the end, covers re-exports:
+    `from engine.runtime import x` reaches engine/runtime/config.py."""
+    for k in range(len(segs), 0, -1):
+        tail = segs[-k:]
+        for i in range(len(parts) - k + 1):
+            if parts[i:i + k] == tail:
+                return k
+    return 0
+
+
+def _narrow(cands: list[tuple[str, str]], segs: list[str]) -> list[tuple[str, str]]:
+    """The candidates whose file best matches the import path; empty when none matches at all."""
+    scored = [(_match_len(segs, _module_parts(p)), p, sid) for p, sid in cands]
+    best = max((s for s, _, _ in scored), default=0)
+    return [(p, sid) for s, p, sid in scored if s == best] if best else []
 
 
 def _rows(res) -> list[dict]:
@@ -111,21 +170,19 @@ def build_index(root=None) -> dict:
 
     # name -> [(path, sym_id, is_member_like)]. Member-like = callable as obj.name(): methods and members of
     # classes/structs, not functions nested inside other functions (those are only reachable by bare name).
-    by_name: dict[str, list[tuple[str, str, bool]]] = defaultdict(list)
+    # Keyed by (language family, name) so a call only ever resolves within the language that can make it.
+    by_name: dict[tuple[str, str], list[tuple[str, str, bool]]] = defaultdict(list)
+    # (family, name) -> [(path, sym_id)] of top-level definitions, for mod.name() calls
+    top_level: dict[tuple[str, str], list[tuple[str, str]]] = defaultdict(list)
     for f in facts:
+        fam = _family(f.language)
         kinds = {s.qualname: s.kind for s in f.symbols}
         for s in f.symbols:
             nested_in_function = kinds.get(s.parent) in ("function", "method")
             member = s.kind == "method" or (s.parent is not None and not nested_in_function)
-            by_name[s.name].append((f.path, _sym_id(f.path, s), member))
-
-    # module name -> language -> [(name, path, sym_id)] of top-level definitions, for mod.name() calls
-    module_defs: dict[str, dict[str, list[tuple[str, str, str]]]] = defaultdict(lambda: defaultdict(list))
-    for f in facts:
-        for m in _module_names(f.path):
-            for s in f.symbols:
-                if s.parent is None:
-                    module_defs[m][f.language].append((s.name, f.path, _sym_id(f.path, s)))
+            by_name[(fam, s.name)].append((f.path, _sym_id(f.path, s), member))
+            if s.parent is None:
+                top_level[(fam, s.name)].append((f.path, _sym_id(f.path, s)))
 
     file_rows, sym_rows, defines, contains, calls, ext_calls, imports = [], [], [], [], [], [], []
     externals, modules = set(), set()
@@ -155,14 +212,17 @@ def build_index(root=None) -> dict:
             modules.add(imp.source)
             imports.append({"f": f.path, "m": imp.source, "line": imp.line, "items": ",".join(imp.items)})
 
+        fam = _family(f.language)
+        module_aware = fam in MODULE_AWARE
         aliases = _module_aliases(f.imports)
+        origins = _imported_from(f.imports) if module_aware else {}
         seen = set()
         for c in f.calls:
             enc = f.enclosing(c.byte)
             src_id = _sym_id(f.path, enc)
-            allc = by_name.get(c.name, [])
+            allc = by_name.get((fam, c.name), [])
             mod = aliases.get(c.receiver) if c.receiver else None
-            mod_cands = [(p, sid) for n, p, sid in module_defs.get(mod, {}).get(f.language, []) if n == c.name] if mod else []
+            mod_cands = _narrow(top_level.get((fam, c.name), []), mod) if mod else []
             if mod_cands:  # mod.name() where `mod` is an imported project module
                 cands = mod_cands
             elif c.member:  # obj.name(): only methods / nested members are plausible targets
@@ -170,11 +230,16 @@ def build_index(root=None) -> dict:
             else:         # bare name(): prefer top-level definitions, fall back to anything
                 cands = [(p, sid) for p, sid, m in allc if not m] or [(p, sid) for p, sid, _ in allc]
             same = [sid for p, sid in cands if p == f.path]
+            origin = origins.get(c.name) if not c.member else None
             if mod_cands:
-                targets, conf = [sid for _, sid in cands], "imported"
+                targets = [sid for _, sid in cands]
+                conf = "imported" if len(targets) == 1 else "ambiguous"
             elif same:
                 targets, conf = same, "same_file"
-            elif cands and c.name in imported_names:
+            elif origin:  # `from mod import name`: only definitions in a file matching `mod` qualify
+                targets = [sid for _, sid in _narrow(cands, origin)]
+                conf = "imported" if len(targets) == 1 else "ambiguous" if targets else None
+            elif cands and not module_aware and c.name in imported_names:
                 targets, conf = [sid for _, sid in cands], "imported"
             elif len(cands) == 1:
                 targets, conf = [cands[0][1]], "unique"
@@ -225,7 +290,7 @@ def build_index(root=None) -> dict:
         "root": str(root), "files": len(file_rows), "symbols": len(sym_rows) - len(file_rows),
         "calls_resolved": len(calls), "calls_external": len(ext_calls), "imports": len(imports),
         "languages": dict(sorted(_count(f.language for f in facts).items(), key=lambda x: -x[1])),
-        "seconds": round(time.time() - t0, 2), "indexed_at": time.time(),
+        "seconds": round(time.time() - t0, 2), "indexed_at": time.time(), "version": __version__,
     }
     (idx / META_NAME).write_text(json.dumps(stats, indent=2))
     stats["notes"] = sorted(notes)[:20]
@@ -245,7 +310,10 @@ def is_stale(root: Path) -> bool:
     meta = index_dir(root) / META_NAME
     if not meta.exists():
         return True
-    built = json.loads(meta.read_text()).get("indexed_at", 0)
+    info = json.loads(meta.read_text())
+    if info.get("version") != __version__:  # built by another codebox: resolution rules may have changed
+        return True
+    built = info.get("indexed_at", 0)
     for rel, _ in source_files(root):
         try:
             if (root / rel).stat().st_mtime > built:
@@ -348,6 +416,7 @@ def overview(root, top: int = 15) -> dict:
     ext = run_query(root, "MATCH (:Symbol)-[:CALLS_EXTERNAL]->(e:External) RETURN e.name AS name, count(*) AS uses "
                           "ORDER BY uses DESC LIMIT $n", {"n": top}, auto_index=False)
     meta.pop("indexed_at", None)
+    meta.pop("version", None)
     return {"stats": meta, "most_called": fan_in, "most_calling": fan_out,
             "largest_files": largest, "top_external_calls": ext}
 
