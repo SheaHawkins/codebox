@@ -157,6 +157,20 @@ def test_report_charts_render(repo):
     assert 'class="deps"' in page and 'class="tree"' in page and 'class="hist"' in page
 
 
+def test_call_graph_panel(repo):
+    import json, re
+    from codebox import report
+    rep = report.build(repo)
+    cg = rep["structure"]["call_graph"]
+    ids = {f["id"] for f in cg["functions"]}
+    assert all(c["source"] in ids and c["target"] in ids for c in cg["calls"])
+    assert any(c["source"].startswith("app.py#") and c["target"].startswith("util.py#twice") for c in cg["calls"])
+    page = report.render(rep, "html")
+    assert "<h3>Call graph</h3>" in page and "cdnjs.cloudflare.com/ajax/libs/d3/7.9.0/d3.min.js" in page
+    data = re.search(r'<script type="application/json" id="fg-data">(.*?)</script>', page, re.S).group(1)
+    assert json.loads(data)["calls"] == cg["calls"]
+
+
 def test_squarify_fills_area():
     from codebox.report_charts import _squarify
     vals = [50.0, 30.0, 15.0, 5.0]

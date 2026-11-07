@@ -1,7 +1,7 @@
 """Render a report (from report.build) as a self-contained HTML page.
 
 The page follows the claude.ai Artifact page contract (no doctype/html/head/body; <title> first;
-theme tokens for light and dark; only Google Fonts as an external resource), so it can be published
+theme tokens for light and dark; only Google Fonts and d3 from cdnjs as external resources), so it can be published
 as an Artifact as-is, and it also opens directly in a browser.
 """
 
@@ -12,6 +12,7 @@ import re
 from pathlib import Path
 
 from . import report_charts as charts
+from . import report_graph
 
 KIND_LABELS = {
     "split_function": "Split function",
@@ -27,6 +28,7 @@ CSS = """
 :root {
   --bg: #f5f6f3; --surface: #ffffff; --fg: #1a201d; --muted: #5b6660; --line: #dde2dd;
   --accent: #2c5a87; --on-accent: #ffffff; --chip: #e8ece8;
+  --crit: #c2412d; --c1: #2c6fc0; --c2: #d9602b; --c3: #1a9a6c; --c4: #c98a00; --c5: #c95488; --c6: #6250d6; --c7: #0f8b8d;
   --font-display: "IBM Plex Sans Condensed", "Arial Narrow", system-ui, sans-serif;
   --font-body: "IBM Plex Sans", system-ui, -apple-system, "Segoe UI", sans-serif;
   --font-mono: "IBM Plex Mono", ui-monospace, "SF Mono", Menlo, monospace;
@@ -35,11 +37,13 @@ CSS = """
   :root:not([data-theme="light"]) {
     --bg: #111513; --surface: #181d1a; --fg: #e4e9e5; --muted: #98a39d; --line: #2b322e;
     --accent: #80a9d6; --on-accent: #0d1420; --chip: #232a26; color-scheme: dark;
+    --crit: #ec7a66; --c1: #5f9be6; --c2: #e8814f; --c3: #3cbf8e; --c4: #dcaa2e; --c5: #e07aa6; --c6: #9a8cf0; --c7: #3cb6b8;
   }
 }
 :root[data-theme="dark"] {
   --bg: #111513; --surface: #181d1a; --fg: #e4e9e5; --muted: #98a39d; --line: #2b322e;
   --accent: #80a9d6; --on-accent: #0d1420; --chip: #232a26; color-scheme: dark;
+    --crit: #ec7a66; --c1: #5f9be6; --c2: #e8814f; --c3: #3cbf8e; --c4: #dcaa2e; --c5: #e07aa6; --c6: #9a8cf0; --c7: #3cb6b8;
 }
 * { box-sizing: border-box; }
 body { background: var(--bg); color: var(--fg); font: 15px/1.55 var(--font-body); margin: 0; }
@@ -339,6 +343,7 @@ def _structure(s: dict, min_in: int, min_out: int) -> str:
             f'<div class="panel"><h3>Dependency layers</h3><p>Files arranged by what they call. Entry points sit at the '
             f"top and foundations at the bottom; each arrow points from caller to callee. In a clean layering every "
             f"arrow points down.</p>{charts.dependency_layers(s.get('layers', []), s.get('file_deps', []))}</div>"
+            f"{report_graph.panel(s.get('call_graph'))}"
             '<div class="grid-2">'
             f'<div class="panel"><h3>Coupling between files</h3><p>Calls between each pair of files, both directions '
             f"combined. Darker cells are more tightly coupled.</p>{_matrix(s['coupling'])}</div>"
@@ -379,7 +384,7 @@ def to_html(rep: dict, complex_ccn: int = 15, hub_in: int = 3, hub_out: int = 5)
     name = Path(rep["root"]).name or "codebase"
     parts = [f"<title>{e(name)} code report</title>",
              '<meta name="claude:viewport-fit-sides" content="cover">',
-             FONTS, f"<style>{CSS}{charts.CHART_CSS}</style>", '<main class="page">', _header(rep), _tiles(rep)]
+             FONTS, f"<style>{CSS}{charts.CHART_CSS}{report_graph.GRAPH_CSS}</style>", '<main class="page">', _header(rep), _tiles(rep)]
     if "recommendations" in rep:
         parts.append(_recommendations(rep["recommendations"]))
     if "risk" in rep:

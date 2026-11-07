@@ -118,7 +118,7 @@ Calls are resolved **by name**, without type inference, in this order: same file
 uv sync && uv run pytest
 ```
 
-Layout: `src/codebox/{discover,parse,graph,analyze,report,report_html,report_charts,server,cli,setup_agents}.py`. The skill lives in `src/codebox/skill/` so that it ships inside the wheel; `skills/codebox` is a symlink to it for plugins and skills.sh.
+Layout: `src/codebox/{discover,parse,graph,analyze,report,report_html,report_charts,report_graph,server,cli,setup_agents}.py`. The skill lives in `src/codebox/skill/` so that it ships inside the wheel; `skills/codebox` is a symlink to it for plugins and skills.sh.
 
 ## Roadmap
 

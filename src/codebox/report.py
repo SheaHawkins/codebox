@@ -26,6 +26,7 @@ LIMITATIONS = [
     "Recommendations come from fixed thresholds on the metrics. Read the code before acting on them.",
     "Dead-code checks are textual: a name mentioned anywhere else counts as used, which can hide dead code "
     "that shares a name with something live.",
+    "The interactive call graph shows the 600 busiest unambiguous call edges and loads d3 from cdnjs.",
 ]
 
 
@@ -97,7 +98,31 @@ def structure(root, exclude=DEFAULT_EXCLUDE, top: int = 15) -> dict:
 
     return {"coupling": coupling_rows, "cycles": cycles, "hubs": hubs,
             "misplaced": misplaced, "crowded_files": crowded,
-            "file_deps": deps, "layers": layers(deps)}
+            "file_deps": deps, "layers": layers(deps), "call_graph": call_graph(root, exclude)}
+
+
+def call_graph(root, exclude=DEFAULT_EXCLUDE, max_edges: int = 600) -> dict:
+    """Function-level call edges (ambiguous ones left out) plus every file's size, for the interactive graph.
+    Keeps the `max_edges` busiest edges."""
+    rows = graph.run_query(root, f"""
+        MATCH (a:Symbol)-[r:CALLS]->(b:Symbol)
+        WHERE r.confidence <> 'ambiguous' AND a.id <> b.id {_path_filter('a', exclude)} {_path_filter('b', exclude)}
+        RETURN a.id AS source, b.id AS target, min(r.line) AS line, count(*) AS calls,
+               a.qualname AS a_name, a.kind AS a_kind, a.path AS a_path, a.start_line AS a_line, a.end_line AS a_end,
+               b.qualname AS b_name, b.kind AS b_kind, b.path AS b_path, b.start_line AS b_line, b.end_line AS b_end
+        ORDER BY calls DESC LIMIT $n""", {"n": max_edges}, limit=max_edges, auto_index=False)
+    nodes: dict[str, dict] = {}
+    edges = []
+    for r in rows:
+        for side, key in (("a", "source"), ("b", "target")):
+            nodes.setdefault(r[key], {"id": r[key], "name": r[f"{side}_name"], "kind": r[f"{side}_kind"],
+                                      "path": r[f"{side}_path"], "line": r[f"{side}_line"],
+                                      "lines": max(1, (r[f"{side}_end"] or 0) - (r[f"{side}_line"] or 0) + 1)})
+        edges.append({"source": r["source"], "target": r["target"], "line": r["line"], "calls": r["calls"]})
+    files = [{"path": f["path"], "code_lines": f["code_lines"] or 0} for f in graph.run_query(
+        root, "MATCH (f:File) RETURN f.path AS path, f.code_lines AS code_lines", limit=100_000, auto_index=False)
+        if not _excluded(f["path"], exclude)]
+    return {"functions": list(nodes.values()), "calls": edges, "files": files}
 
 
 def layers(deps: list[dict], max_files: int = 24) -> list[dict]:
